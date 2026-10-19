@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Executive Sales Dashboard | HOD · RSM · ASM · MIO/SPO</title>
+  <meta name="description" content="Designation-driven executive sales performance dashboard. Switch between HOD, RSM, ASM and MIO/SPO views." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css?v=20261009-15" />
+</head>
+<body class="executive-page">
+  <div class="app executive-dashboard" id="app" data-designation="HOD">
+
+    <div class="data-loader" id="dataLoader" hidden role="status" aria-live="polite" aria-label="Loading data from database">
+      <div class="data-loader-card">
+        <span class="data-loader-spinner" aria-hidden="true"></span>
+        <strong>Loading data from database...</strong>
+        <small>Please wait</small>
+      </div>
+    </div>
+
+    <header class="topbar" id="topbar">
+      <div class="brand">
+        <div class="brand-logo" id="brandLogo" aria-hidden="true"></div>
+        <div class="brand-text">
+          <h1 id="dashTitle">Executive Dashboard</h1>
+          <p id="dashSubtitle"></p>
+        </div>
+      </div>
+
+      <div class="value-toggle" id="valueToggle" role="group" aria-label="Sales value conversion">
+        <button type="button" data-value-metric="tp" aria-pressed="false">TP Value</button>
+        <button type="button" data-value-metric="net_with_reg" aria-pressed="true">Net Sale Value</button>
+        <button type="button" data-value-metric="units" aria-pressed="false">Units</button>
+        <button type="button" data-value-metric="cyp" aria-pressed="false">CYP</button>
+      </div>
+
+      <form class="filters" id="filters" onsubmit="return false">
+        <label class="filter team-filter" for="fTeam">
+          <span>Team</span>
+          <select id="fTeam" name="team">
+            <option value="COMBINED" selected>Team</option>
+            <option value="PHARMA">Pharma</option>
+            <option value="FMCG">FMCG</option>
+          </select>
+        </label>
+        <label class="filter picker-filter designation-filter" for="fDesignation" data-picker-field="designation">
+          <span>Designation</span>
+          <select id="fDesignation" name="designation" class="picker-native"></select>
+          <button class="filter-picker-toggle" type="button" data-picker-toggle="designation" aria-haspopup="listbox" aria-expanded="false">Designation</button>
+          <div class="filter-picker-menu" data-picker-menu="designation" hidden>
+            <input class="filter-picker-search" type="search" data-picker-search="designation" placeholder="Search designation..." autocomplete="off" />
+            <div class="filter-picker-options" data-picker-options="designation" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter employee-filter" for="fName">
+          <span>Employee</span>
+          <select id="fName" name="employee" class="employee-native"><option value="All">Employee</option></select>
+          <button id="employeePickerToggle" class="employee-picker-toggle" type="button" aria-haspopup="listbox" aria-expanded="false">Employee</button>
+          <button id="fNameSearchToggle" class="filter-search-toggle" type="button" aria-label="Search SPO name">⌕</button>
+          <div id="employeePickerMenu" class="employee-picker-menu" hidden>
+            <input id="fNameSearch" class="employee-picker-search" type="search" placeholder="Search employee..." autocomplete="off" />
+            <div id="employeePickerOptions" class="employee-picker-options" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter picker-filter region-filter" for="fRegion" data-picker-field="region">
+          <span>Region</span>
+          <select id="fRegion" name="region" class="picker-native"><option value="All">Region</option></select>
+          <button class="filter-picker-toggle" type="button" data-picker-toggle="region" aria-haspopup="listbox" aria-expanded="false">Region</button>
+          <div class="filter-picker-menu" data-picker-menu="region" hidden>
+            <input class="filter-picker-search" type="search" data-picker-search="region" placeholder="Search region..." autocomplete="off" />
+            <div class="filter-picker-options" data-picker-options="region" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter picker-filter zone-filter" for="fZone" data-picker-field="zone">
+          <span>Zone</span>
+          <select id="fZone" name="zone" class="picker-native"><option value="All">Zone</option></select>
+          <button class="filter-picker-toggle" type="button" data-picker-toggle="zone" aria-haspopup="listbox" aria-expanded="false">Zone</button>
+          <div class="filter-picker-menu" data-picker-menu="zone" hidden>
+            <input class="filter-picker-search" type="search" data-picker-search="zone" placeholder="Search zone..." autocomplete="off" />
+            <div class="filter-picker-options" data-picker-options="zone" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter picker-filter subzone-filter" for="fSubZone" data-picker-field="subzone">
+          <span>Sub Zone</span>
+          <select id="fSubZone" name="subzone" class="picker-native"><option value="All">Sub Zone</option></select>
+          <button class="filter-picker-toggle" type="button" data-picker-toggle="subzone" aria-haspopup="listbox" aria-expanded="false">Sub Zone</button>
+          <div class="filter-picker-menu" data-picker-menu="subzone" hidden>
+            <input class="filter-picker-search" type="search" data-picker-search="subzone" placeholder="Search sub zone..." autocomplete="off" />
+            <div class="filter-picker-options" data-picker-options="subzone" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter picker-filter territory-filter" for="fTerritory" data-picker-field="territory">
+          <span>Dept Terr Code</span>
+          <select id="fTerritory" name="territory" class="picker-native"><option value="All">Dept Terr Code</option></select>
+          <button class="filter-picker-toggle" type="button" data-picker-toggle="territory" aria-haspopup="listbox" aria-expanded="false">Dept Terr Code</button>
+          <div class="filter-picker-menu" data-picker-menu="territory" hidden>
+            <input class="filter-picker-search" type="search" data-picker-search="territory" placeholder="Search territory..." autocomplete="off" />
+            <div class="filter-picker-options" data-picker-options="territory" role="listbox"></div>
+          </div>
+        </label>
+        <label class="filter" for="fMonth">
+          <span>Month</span>
+          <select id="fMonth" name="month"></select>
+        </label>
+        <label class="filter" for="fFY">
+          <span>FY</span>
+          <select id="fFY" name="fy"></select>
+        </label>
+        <button type="button" id="applyFilters" class="apply-filters">Apply Filters</button>
+      </form>
+    </header>
+
+    <main class="dashboard" id="dashboard" aria-live="polite">
+      <section class="kpi-row" id="kpiRow" aria-label="Key performance indicators"></section>
+      <section class="grid" id="panelGrid" aria-label="Dashboard panels"></section>
+    </main>
+
+    <section class="ai" id="aiInsights" aria-label="AI Performance Analysis"></section>
+
+  </div>
+
+  <script src="js/config.js?v=20261008-10"></script>
+  <script src="js/components.js?v=20261009-4"></script>
+  <script src="js/api.js?v=20261013-3"></script>
+  <script src="js/app.js?v=20261013-1"></script>
+  <script src="js/ai-insights.js?v=20261012-3"></script>
+</body>
+</html>
