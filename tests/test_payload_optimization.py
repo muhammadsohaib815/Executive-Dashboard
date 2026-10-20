@@ -3,12 +3,12 @@ from pathlib import Path
 
 from starlette.middleware.gzip import GZipMiddleware
 
-import server
+from scripts import server
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXECUTIVE_JS = ROOT / "executive_website" / "static" / "js"
-SERVER_SOURCE = (ROOT / "server.py").read_text(encoding="utf-8")
+EXECUTIVE_JS = ROOT / "frontend" / "js"
+SERVER_SOURCE = (ROOT / "scripts" / "server.py").read_text(encoding="utf-8")
 API_SOURCE = (EXECUTIVE_JS / "api.js").read_text(encoding="utf-8")
 AI_SOURCE = (EXECUTIVE_JS / "ai-insights.js").read_text(encoding="utf-8")
 

@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-const source = fs.readFileSync('executive_website/static/js/ai-insights.js', 'utf8');
+const source = fs.readFileSync('frontend/js/ai-insights.js', 'utf8');
 
 assert.match(source, /AI SALES INSIGHTS/);
 assert.match(source, /Load Insights/);

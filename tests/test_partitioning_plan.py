@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN = (ROOT / "db/migrations/005_sales_data_month_partition_PLAN.sql").read_text(encoding="utf-8")
 ROLLBACK = (ROOT / "db/migrations/005_sales_data_month_partition_ROLLBACK_PLAN.sql").read_text(encoding="utf-8")
-SERVER = (ROOT / "server.py").read_text(encoding="utf-8")
+SERVER = (ROOT / "scripts" / "server.py").read_text(encoding="utf-8")
 
 
 class PartitioningPlanTests(unittest.TestCase):

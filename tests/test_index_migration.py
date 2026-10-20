@@ -2,7 +2,7 @@
 
 import unittest
 
-from db.run_index_migration import MIGRATIONS, check_index, command_target, statements
+from scripts.db.run_index_migration import MIGRATIONS, check_index, command_target, statements
 
 
 class _CatalogCursor:

@@ -1,6 +1,6 @@
 ﻿"""Synthetic fixtures exercise edge cases only; production reads PostgreSQL."""
 import unittest
-from services.ai_analysis.engine import analyze, rank
+from scripts.services.ai_analysis.engine import analyze, rank
 
 
 def row(code='A', actual=70000, target=100000, **extra):

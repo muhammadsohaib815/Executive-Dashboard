@@ -4,8 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
-import server
-from response_cache import TTLResponseCache
+from scripts import server
+from scripts.response_cache import TTLResponseCache
 
 
 class ResponseCacheTests(unittest.TestCase):

@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-import server
+from scripts import server
 
 
 class HierarchyScopeTests(unittest.TestCase):

@@ -7,7 +7,7 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import performance_monitor as monitor
+from scripts import performance_monitor as monitor
 
 
 class _Cursor:

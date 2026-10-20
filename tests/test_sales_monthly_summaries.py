@@ -5,12 +5,12 @@ import unittest
 
 import psycopg2
 
-from db.install_sales_monthly_summaries import check_installed_schema
-from db.refresh_sales_monthly_summaries import (
+from scripts.db.install_sales_monthly_summaries import check_installed_schema
+from scripts.db.refresh_sales_monthly_summaries import (
     METRICS, ROOT, SOURCE_COLUMNS, TABLES, insert_sql, load_env,
     periods_to_refresh, refresh_periods,
 )
-from db.validate_sales_monthly_summaries import validate
+from scripts.db.validate_sales_monthly_summaries import validate
 
 
 MIGRATION = (ROOT / "db/migrations/003_sales_monthly_summaries.sql").read_text(
