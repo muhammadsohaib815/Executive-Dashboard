@@ -53,8 +53,8 @@ body { min-height: 100vh; -webkit-font-smoothing: antialiased; }
 }
 .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .brand-logo {
-  width: 50px; height: 50px; border-radius: 13px; display: grid; place-items: center; font-size: 28px; color: #fff;
-  background: linear-gradient(135deg, #3da1ff, var(--accent)); box-shadow: 0 4px 14px rgba(0,0,0,.3);
+  width: 138px; height: 54px; flex: none; object-fit: contain; border-radius: 8px;
+  background: #fff; box-shadow: 0 4px 14px rgba(0,0,0,.3);
 }
 .brand-text h1 { font-size: clamp(18px, 2vw, 26px); font-weight: 800; letter-spacing: .3px; line-height: 1.15; }
 .brand-text p {
@@ -225,7 +225,6 @@ body.card-expansion-open::after { content:""; position:fixed; inset:0; z-index:1
 .app[data-designation="spo"] .topbar { flex-wrap: nowrap; gap: 12px; padding: 10px 18px; }
 .app[data-designation="spo"] .filters { gap: 8px; flex-wrap: nowrap; }
 .app[data-designation="spo"] .filter select { min-width: 96px; padding: 7px 25px 7px 9px; font-size: 12px; }
-.app[data-designation="spo"] .brand-logo { width: 46px; height: 46px; }
 .app[data-designation="spo"] .brand-text h1 { font-size: 23px; }
 .app[data-designation="spo"] .kpi-row { gap: 10px; }
 .app[data-designation="spo"] .kpi { padding: 10px 12px; gap: 9px; }
@@ -259,7 +258,6 @@ body.card-expansion-open::after { content:""; position:fixed; inset:0; z-index:1
 .app[data-designation="mio"] .topbar { flex-wrap: nowrap; gap: 12px; padding: 10px 18px; }
 .app[data-designation="mio"] .filters { gap: 8px; flex-wrap: nowrap; }
 .app[data-designation="mio"] .filter select { min-width: 96px; padding: 7px 25px 7px 9px; font-size: 12px; }
-.app[data-designation="mio"] .brand-logo { width: 46px; height: 46px; }
 .app[data-designation="mio"] .brand-text h1 { font-size: 23px; }
 .app[data-designation="mio"] .kpi-row { gap: 10px; }
 .app[data-designation="mio"] .kpi { padding: 10px 12px; gap: 9px; }
@@ -1169,7 +1167,7 @@ details.section5-insight { display: block; padding: 0 !important; }
   .app { width: 100%; max-width: 100%; margin: 0; padding: 10px 20px 26px; }
   .topbar { padding: 10px 16px; gap: 12px; border-radius: 13px; border-bottom-width: 2px; }
   .brand { gap: 10px; }
-  .brand-logo { width: 42px; height: 42px; border-radius: 11px; font-size: 23px; }
+  .brand-logo { width: 128px; height: 50px; }
   .brand-text h1 { font-size: clamp(17px, 1.45vw, 24px); }
   .brand-text p { font-size: 11px; margin-top: 2px; }
   .filter-drawer { margin-top: 7px; margin-bottom: 7px; }

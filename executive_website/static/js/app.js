@@ -31,7 +31,6 @@
     fillSelect($("fDesignation"), DESIGNATIONS, state.designation);
     fillSelect($("fMonth"), MONTHS, MONTHS[0]);
     fillSelect($("fFY"), FISCAL_YEARS, FISCAL_YEARS[0]);
-    $("brandLogo").innerHTML = icon("chart");
     $("fDesignation").addEventListener("change", e => {
       setDesignation(e.target.value || "ALL");
       updateApplyState(false);
