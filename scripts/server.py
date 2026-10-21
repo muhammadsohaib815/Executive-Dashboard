@@ -2192,6 +2192,13 @@ def index(request: Request):
     return FileResponse(FRONTEND_DIR / "html" / page, media_type="text/html; charset=utf-8")
 
 
+@app.get("/dashboard")
+def dashboard_page(request: Request):
+    if not session_from_request(request):
+        return RedirectResponse(url="/")
+    return FileResponse(FRONTEND_DIR / "html" / "index.html", media_type="text/html; charset=utf-8")
+
+
 @app.get("/admin")
 def admin_page(request: Request):
     session = session_from_request(request)

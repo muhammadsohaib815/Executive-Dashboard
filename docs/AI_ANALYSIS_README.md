@@ -65,13 +65,11 @@ findings are unavailable until matching data is loaded.
 Run from the project root:
 
 ```text
-python -m unittest discover -s tests -v
-node tests/test_ai_frontend.cjs
 node --check frontend/js/ai-insights.js
 node --check frontend/js/api.js
 ```
 
-Tests use synthetic fixtures only. Live read-only FastAPI checks cover national,
+Historical validation used synthetic fixtures. Live read-only FastAPI checks cover national,
 team, employee, designation, product and product-group filters, invalid inputs,
 and the existing home/KPI endpoints. Browser layout still requires a visual check
 because no browser surface was connected during implementation.

@@ -29,7 +29,7 @@
     $("showSetup")?.addEventListener("click", () => { loginView.hidden = true; setupView.hidden = false; message(""); });
     $("showLogin")?.addEventListener("click", () => { setupView.hidden = true; loginView.hidden = false; message(""); });
     request("/api/auth/status").then(status => {
-      if (status.authenticated) window.location.replace(status.user.role === "admin" ? "/admin" : "/");
+      if (status.authenticated) window.location.replace(status.user.role === "admin" ? "/admin" : "/dashboard");
       $("showSetup").hidden = !status.setup_required;
     }).catch(error => message(error.message));
     loginForm.addEventListener("submit", async event => {
@@ -40,7 +40,7 @@
         const result = await request("/api/auth/login", {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(formData(loginForm)),
         });
-        window.location.replace(result.user.role === "admin" ? "/admin" : "/");
+        window.location.replace(result.user.role === "admin" ? "/admin" : "/dashboard");
       } catch (error) {
         message(error.message);
       } finally {

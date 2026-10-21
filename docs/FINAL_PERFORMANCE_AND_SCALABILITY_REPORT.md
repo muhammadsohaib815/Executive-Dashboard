@@ -270,5 +270,5 @@ Database artifacts: the SQL migrations under `db/migrations`, summary install,
 refresh and validation scripts under `scripts/db/`, and the
 operational documents under `db`.
 
-Verification: all files under `tests`, including hierarchy, summaries, cache,
-pooling, payload, indexes, performance logging, and AI edge-case coverage.
+Historical verification covered hierarchy, summaries, cache, pooling, payload,
+indexes, performance logging, and AI edge cases before the development-only test folder was removed.
