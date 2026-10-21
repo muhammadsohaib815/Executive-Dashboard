@@ -105,6 +105,7 @@
         userMenuButton.title = user.full_name;
         loadNotifications();
       }
+      document.dispatchEvent(new CustomEvent("dashboard:auth-user", { detail: user }));
     }).catch(() => window.location.replace("/"));
     logout?.addEventListener("click", async () => {
       await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });

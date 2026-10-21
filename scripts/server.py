@@ -1190,6 +1190,41 @@ def employee_scope(employee: str = Query(..., min_length=1)):
     return {"records": records}
 
 
+@app.get("/api/position-scope")
+def position_scope(position_code: str = Query(..., min_length=1)):
+    """Return the identity and geography for an assigned position code."""
+    position_code = position_code.strip()
+    scoped_positions = request_scope_positions()
+    sql = f"""SELECT DISTINCT position_code, employee_name, designation_name,
+          team_name, dept_territory_code, region_name, zone_name, sub_zone,
+          department_name,
+          CASE
+            WHEN UPPER(TRIM(team_name)) LIKE '%%PHARM%%' THEN 'PHARMA'
+            WHEN UPPER(TRIM(team_name)) LIKE '%%FMCG%%'
+              OR UPPER(TRIM(team_name)) LIKE '%%FAST MOVING%%' THEN 'FMCG'
+            ELSE 'COMBINED'
+          END AS team_filter
+        FROM staff_master
+        WHERE TRIM(position_code) = %s
+          AND (%s::text[] IS NULL OR position_code = ANY(%s))
+        ORDER BY position_code"""
+    rows = query(sql, [position_code, scoped_positions, scoped_positions], "filters.position_scope")
+    if not rows:
+        raise HTTPException(404, f"No staff-master record found for position '{position_code}'")
+    records = []
+    for row in rows:
+        pos_code = row[0] or ""
+        dept = pos_code.split('-')[1] if '-' in pos_code and len(pos_code.split('-')) >= 2 else (
+            "PHR" if row[9] == "PHARMA" else "FMCG" if row[9] == "FMCG" else (row[8] or "")
+        )
+        records.append({
+            "position_code": row[0], "employee": row[1], "designation": row[2],
+            "team": row[3], "territory": row[4], "region": row[5],
+            "zone": row[6], "subzone": row[7], "department": dept, "team_filter": row[9]
+        })
+    return {"records": records}
+
+
 @app.get("/api/territory-scope")
 def territory_scope(territory: str = Query(..., min_length=1)):
     """Return the actual staff-master rows associated with one territory.

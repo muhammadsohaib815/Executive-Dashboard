@@ -436,6 +436,66 @@
     }
   }
 
+  let authenticatedScopeRequestId = 0;
+  async function applyAuthenticatedScope(user) {
+    if (!user || user.role === "admin" || !user.scope_position_code) return;
+    const requestId = ++authenticatedScopeRequestId;
+    try {
+      const response = await getJSON("/api/position-scope?position_code=" + encodeURIComponent(user.scope_position_code));
+      if (requestId !== authenticatedScopeRequestId) return;
+      const record = response.records?.[0];
+      if (!record) throw new Error("No staff record exists for the assigned position");
+
+      activeEmployeeRecord = record;
+      employeeScopeSnapshot = null;
+      autoFilledSelections.clear();
+      const scopedValues = {
+        employee: record.employee || "All", region: record.region || "All",
+        zone: record.zone || "All", subzone: record.subzone || "All",
+        territory: record.territory || "All"
+      };
+      Object.entries(scopedValues).forEach(([field, value]) => {
+        userSelections[field] = value;
+        effectiveSelections[field] = value;
+        autoFilledSelections.add(field);
+      });
+
+      const team = record.team_filter || "COMBINED";
+      setTeamOptions([team], team);
+      $("fTeam").value = team;
+      $("teamToggle")?.querySelectorAll("[data-team]").forEach(item => {
+        item.setAttribute("aria-pressed", String(item.dataset.team === team));
+      });
+      periodMode = "YTD";
+      $("periodToggle")?.querySelectorAll("[data-period]").forEach(item => {
+        item.setAttribute("aria-pressed", String(item.dataset.period === "YTD"));
+      });
+      valueMetric = "net_with_reg";
+      $("valueToggle")?.querySelectorAll("[data-value-metric]").forEach(item => {
+        item.setAttribute("aria-pressed", String(item.dataset.valueMetric === valueMetric));
+      });
+
+      await loadMeta(team, { preferLatestMonth: true });
+      setDesignationValue(record.designation || "SPO");
+      await loadFilters(record.designation || "SPO", team);
+      if (requestId !== authenticatedScopeRequestId) return;
+      updateDashboardHeader({
+        employee: record.employee, designation: record.designation, team: record.team,
+        team_filter: team, position_code: record.position_code,
+        dept_territory_code: record.territory, territory: record.territory,
+        department: record.department, header_region: record.region,
+        region: record.region, zone: record.zone, subzone: record.subzone
+      });
+      window.setDashboardDesignation?.(record.designation || "SPO");
+    } catch (error) {
+      status("Could not load your assigned dashboard position: " + error.message);
+    }
+  }
+
+  document.addEventListener("dashboard:auth-user", event => {
+    applyAuthenticatedScope(event.detail);
+  });
+
   function renderDropdowns(searchField = "", search = "") {
     return searchFilterOptions(searchField, search);
   }
