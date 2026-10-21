@@ -111,6 +111,13 @@ body { min-height: 100vh; -webkit-font-smoothing: antialiased; }
 }
 .header-filter-toggle:hover, .header-filter-toggle:focus-visible { background: #0a9a6a; box-shadow: 0 4px 10px rgba(0, 60, 40, .3); transform: translateY(-1px); outline: none; }
 .header-filter-toggle .ico { width: 18px; height: 18px; color: #fff; }
+.admin-link, .logout-button {
+  min-height: 34px; padding: 6px 10px; border-radius: 8px; font: 800 11px "Inter", sans-serif; white-space: nowrap; cursor: pointer;
+}
+.admin-link { display: inline-flex; align-items: center; color: #d9f2e5; border: 1px solid rgba(155,230,199,.55); text-decoration: none; }
+.admin-link:hover { background: rgba(255,255,255,.12); }
+.logout-button { border: 1px solid #8ddfba; color: #fff; background: rgba(255,255,255,.1); }
+.logout-button:hover { background: rgba(255,255,255,.2); }
 .team-state { display: none !important; }
 
 .filters { display: flex; gap: 12px; flex-wrap: wrap; }

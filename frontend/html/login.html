@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in | Executive Dashboard</title>
+  <link rel="stylesheet" href="/css/auth.css?v=20261020-1" />
+</head>
+<body class="auth-page">
+  <main class="auth-shell">
+    <section class="auth-card" aria-labelledby="authTitle">
+      <div class="auth-brand">
+        <img src="/images/greenstar-short.jfif" alt="Greenstar" />
+        <div>
+          <strong>Greenstar</strong>
+          <span>Executive Sales Dashboard</span>
+        </div>
+      </div>
+      <div id="loginView">
+        <p class="eyebrow">Secure workspace</p>
+        <h1 id="authTitle">Sign in to your dashboard</h1>
+        <p class="auth-copy">Use your dashboard ID and password to continue.</p>
+        <form id="loginForm" class="auth-form">
+          <label>Username<input name="username" autocomplete="username" required minlength="3" /></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password" required minlength="8" /></label>
+          <button class="auth-submit" type="submit">Sign in</button>
+        </form>
+        <button id="showSetup" class="text-button" type="button" hidden>First-time administrator setup</button>
+      </div>
+      <div id="setupView" hidden>
+        <p class="eyebrow">First-time setup</p>
+        <h1>Create administrator account</h1>
+        <p class="auth-copy">This setup is available only until the first account is created.</p>
+        <form id="setupForm" class="auth-form">
+          <label>Full name<input name="full_name" autocomplete="name" required minlength="2" /></label>
+          <label>Admin username<input name="username" autocomplete="username" required minlength="3" /></label>
+          <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="8" /></label>
+          <button class="auth-submit" type="submit">Create administrator</button>
+        </form>
+        <button id="showLogin" class="text-button" type="button">Back to sign in</button>
+      </div>
+      <p id="authMessage" class="auth-message" role="alert" hidden></p>
+    </section>
+  </main>
+  <script src="/js/auth.js?v=20261020-1"></script>
+</body>
+</html>

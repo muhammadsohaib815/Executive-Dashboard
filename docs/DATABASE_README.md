@@ -8,11 +8,13 @@ maintenance are documented in [CONNECTION_POOL_AND_MAINTENANCE.md](CONNECTION_PO
 The measured partitioning decision and guarded future migration plan are in
 [PARTITIONING_EVALUATION.md](PARTITIONING_EVALUATION.md).
 
-`call_data_rollup` stores the FMCG activity needed by the dashboard at four
-grains: manager/day, shop/month, shop/day, and outcome/position/month. The
-dashboard combines these rows for the selected staff scope. It no longer scans
-or groups `call_data` on each KPI request. Shop/day rows preserve exact distinct
-call-day counts when multiple positions are selected.
+The current Call Performance panel reads `fmcg_cust_call`, `fmcg_exception`,
+and `pharma_provider_calls`. It maps each source `ff_id` to
+`staff_master.hawk_emp_id`, then applies the selected hierarchy and month.
+
+`call_data_rollup` retains the older FMCG activity model at four grains:
+manager/day, shop/month, shop/day, and outcome/position/month. Keep it only for
+legacy reports that still read `call_data`.
 
 Install or rebuild the table from the project root:
 

@@ -13,17 +13,26 @@ Run:  python scripts/server.py     ->  http://localhost:8000
 """
 import sys
 import datetime as dt
+import base64
 import contextvars
 import hashlib
+import hmac
+import json
+import logging
+import secrets
 import threading
+import time
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from psycopg2 import sql as pgsql
+from psycopg2.extras import execute_values
 from psycopg2.pool import ThreadedConnectionPool
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -57,6 +66,14 @@ def load_env(path: Path) -> dict:
 
 ENV = load_env(ROOT / ".env")
 
+LOGGER = logging.getLogger("executive_dashboard.auth")
+AUTH_COOKIE_NAME = "dashboard_session"
+AUTH_ROLES = {"admin", "executive", "manager", "viewer"}
+AUTH_SESSION_TTL_SECONDS = 28800
+AUTH_SECRET = ENV.get("AUTH_SECRET") or secrets.token_hex(32)
+AUTH_COOKIE_SECURE = ENV.get("AUTH_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
+PASSWORD_ITERATIONS = 260_000
+
 
 def bounded_int_setting(name, default, minimum, maximum):
     try:
@@ -64,6 +81,9 @@ def bounded_int_setting(name, default, minimum, maximum):
     except (TypeError, ValueError):
         value = default
     return max(minimum, min(maximum, value))
+
+
+AUTH_SESSION_TTL_SECONDS = bounded_int_setting("AUTH_SESSION_TTL_SECONDS", 28800, 900, 604800)
 
 
 DB_POOL_MIN = bounded_int_setting("DB_POOL_MIN", 1, 1, 20)
@@ -162,6 +182,144 @@ def query(sql: str, params: list, query_id: str = None):
         DB_POOL_ACQUIRE_TIMEOUT_SECONDS, pool_metrics,
     )
     return rows
+
+
+def execute_transaction(statement: str, params=None, query_id: str = "db.write"):
+    """Execute a write with an explicit commit and always return the connection."""
+    conn = None
+    try:
+        conn = pool.getconn()
+        with conn.cursor() as cursor:
+            cursor.execute(statement, params or [])
+            rows = cursor.fetchall() if cursor.description else []
+        conn.commit()
+        return rows
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        LOGGER.exception("database write failed: %s", query_id)
+        raise
+    finally:
+        if conn is not None:
+            pool.putconn(conn)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PASSWORD_ITERATIONS,
+    )
+    return "pbkdf2_sha256${}${}${}".format(
+        PASSWORD_ITERATIONS,
+        base64.urlsafe_b64encode(salt).decode("ascii").rstrip("="),
+        base64.urlsafe_b64encode(digest).decode("ascii").rstrip("="),
+    )
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations, salt_text, digest_text = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
+        expected = base64.urlsafe_b64decode(digest_text + "=" * (-len(digest_text) % 4))
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _token_part(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _token_bytes(value: str) -> bytes:
+    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def create_session(user: dict) -> str:
+    payload = {
+        "uid": int(user["id"]), "username": user["username"],
+        "role": user["role"], "exp": int(time.time()) + AUTH_SESSION_TTL_SECONDS,
+    }
+    encoded = _token_part(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(AUTH_SECRET.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    return f"{encoded}.{_token_part(signature)}"
+
+
+def decode_session(token: str | None):
+    if not token or "." not in token:
+        return None
+    encoded, signature = token.split(".", 1)
+    expected = hmac.new(AUTH_SECRET.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
+    try:
+        supplied = _token_bytes(signature)
+        if not hmac.compare_digest(expected, supplied):
+            return None
+        payload = json.loads(_token_bytes(encoded).decode("utf-8"))
+        if int(payload.get("exp", 0)) <= int(time.time()):
+            return None
+        return payload
+    except (ValueError, TypeError, KeyError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def session_from_request(request: Request):
+    return decode_session(request.cookies.get(AUTH_COOKIE_NAME))
+
+
+def current_user(request: Request):
+    session = session_from_request(request)
+    if not session:
+        raise HTTPException(401, "Authentication required")
+    rows = query(
+        """SELECT id, username, full_name, role, is_active, created_at, last_login_at
+           FROM public.dashboard_users WHERE id = %s LIMIT 1""",
+        [session.get("uid")], "auth.current_user",
+    )
+    if not rows or not rows[0][4]:
+        raise HTTPException(401, "Your account is inactive or no longer exists")
+    row = rows[0]
+    return {
+        "id": row[0], "username": row[1], "full_name": row[2], "role": row[3],
+        "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
+        "last_login_at": row[6].isoformat() if row[6] else None,
+    }
+
+
+def require_admin(request: Request):
+    user = current_user(request)
+    if user["role"] != "admin":
+        raise HTTPException(403, "Administrator access required")
+    return user
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class SetupRequest(LoginRequest):
+    full_name: str = Field(min_length=2, max_length=120)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    full_name: str = Field(min_length=2, max_length=120)
+    password: str = Field(min_length=8, max_length=256)
+    role: str = Field(default="viewer", min_length=4, max_length=20)
+
+
+class UserUpdateRequest(BaseModel):
+    full_name: str | None = Field(default=None, min_length=2, max_length=120)
+    role: str | None = Field(default=None, min_length=4, max_length=20)
+    password: str | None = Field(default=None, min_length=8, max_length=256)
+    is_active: bool | None = None
+
+
+class DataImportRequest(BaseModel):
+    table: str = Field(min_length=1, max_length=80)
+    rows: list[dict[str, object]] = Field(min_length=1, max_length=2000)
 
 
 def submit_query(executor, query_id, sql, params):
@@ -457,6 +615,18 @@ app.add_middleware(EndpointTimingMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 
+@app.middleware("http")
+async def require_api_session(request: Request, call_next):
+    path = request.url.path
+    public = {
+        "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout",
+    }
+    if path.startswith("/api/") and path not in public and request.method != "OPTIONS":
+        if not session_from_request(request):
+            return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+    return await call_next(request)
+
+
 @app.exception_handler(DatabasePoolTimeout)
 async def database_pool_timeout_handler(_request, _exc):
     return JSONResponse(
@@ -464,6 +634,209 @@ async def database_pool_timeout_handler(_request, _exc):
         content={"detail": "Database capacity is temporarily busy; retry shortly."},
         headers={"Retry-After": "1"},
     )
+
+
+def set_session_cookie(response, user):
+    response.set_cookie(
+        AUTH_COOKIE_NAME, create_session(user), max_age=AUTH_SESSION_TTL_SECONDS,
+        httponly=True, secure=AUTH_COOKIE_SECURE, samesite="lax", path="/",
+    )
+
+
+def public_user(row):
+    return {
+        "id": row[0], "username": row[1], "full_name": row[2], "role": row[3],
+        "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
+        "updated_at": row[6].isoformat() if row[6] else None,
+        "last_login_at": row[7].isoformat() if row[7] else None,
+    }
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request):
+    rows = query("SELECT COUNT(*) FROM public.dashboard_users", [], "auth.user_count")
+    setup_required = not rows or int(rows[0][0]) == 0
+    user = None
+    if not setup_required and session_from_request(request):
+        try:
+            user = current_user(request)
+        except HTTPException:
+            user = None
+    return {"setup_required": setup_required, "authenticated": user is not None, "user": user}
+
+
+@app.post("/api/auth/setup")
+def auth_setup(payload: SetupRequest):
+    rows = query("SELECT COUNT(*) FROM public.dashboard_users", [], "auth.user_count")
+    if rows and int(rows[0][0]) > 0:
+        raise HTTPException(409, "Initial administrator setup is already complete")
+    username = payload.username.strip().lower()
+    full_name = payload.full_name.strip()
+    if not username or not full_name:
+        raise HTTPException(400, "Username and full name are required")
+    try:
+        created = execute_transaction(
+            """INSERT INTO public.dashboard_users
+               (username, full_name, password_hash, role)
+               VALUES (%s, %s, %s, 'admin')
+               RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at""",
+            [username, full_name, hash_password(payload.password)], "auth.setup_admin",
+        )
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            raise HTTPException(409, "That username is already in use") from exc
+        raise
+    response = JSONResponse({"user": public_user(created[0])})
+    set_session_cookie(response, {"id": created[0][0], "username": created[0][1], "role": created[0][3]})
+    return response
+
+
+@app.post("/api/auth/login")
+def auth_login(payload: LoginRequest):
+    username = payload.username.strip().lower()
+    rows = query(
+        """SELECT id, username, full_name, password_hash, role, is_active,
+                  created_at, updated_at, last_login_at
+           FROM public.dashboard_users WHERE LOWER(username) = %s LIMIT 1""",
+        [username], "auth.login",
+    )
+    if not rows or not rows[0][5] or not verify_password(payload.password, rows[0][3]):
+        raise HTTPException(401, "Invalid username or password")
+    row = rows[0]
+    execute_transaction(
+        "UPDATE public.dashboard_users SET last_login_at = NOW(), updated_at = NOW() WHERE id = %s",
+        [row[0]], "auth.last_login",
+    )
+    user = {"id": row[0], "username": row[1], "full_name": row[2], "role": row[4]}
+    response = JSONResponse({"user": {**user, "is_active": row[5]}})
+    set_session_cookie(response, user)
+    return response
+
+
+@app.post("/api/auth/logout")
+def auth_logout():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    return {"user": current_user(request)}
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    require_admin(request)
+    rows = query(
+        """SELECT id, username, full_name, role, is_active, created_at,
+                  updated_at, last_login_at
+           FROM public.dashboard_users ORDER BY username""",
+        [], "auth.admin_users",
+    )
+    return {"users": [public_user(row) for row in rows]}
+
+
+@app.post("/api/admin/users")
+def admin_create_user(payload: UserCreateRequest, request: Request):
+    require_admin(request)
+    username = payload.username.strip().lower()
+    full_name = payload.full_name.strip()
+    role = payload.role.strip().lower()
+    if role not in AUTH_ROLES:
+        raise HTTPException(400, "role must be admin, executive, manager, or viewer")
+    if not username or not full_name:
+        raise HTTPException(400, "Username and full name are required")
+    try:
+        rows = execute_transaction(
+            """INSERT INTO public.dashboard_users
+               (username, full_name, password_hash, role)
+               VALUES (%s, %s, %s, %s)
+               RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at""",
+            [username, full_name, hash_password(payload.password), role], "auth.admin_create_user",
+        )
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            raise HTTPException(409, "That username is already in use") from exc
+        raise
+    return {"user": public_user(rows[0])}
+
+
+@app.patch("/api/admin/users/{user_id}")
+def admin_update_user(user_id: int, payload: UserUpdateRequest, request: Request):
+    admin = require_admin(request)
+    if admin["id"] == user_id and payload.is_active is False:
+        raise HTTPException(400, "You cannot deactivate your own administrator account")
+    fields, values = [], []
+    if payload.full_name is not None:
+        fields.append("full_name = %s"); values.append(payload.full_name.strip())
+    if payload.role is not None:
+        role = payload.role.strip().lower()
+        if role not in AUTH_ROLES:
+            raise HTTPException(400, "role must be admin, executive, manager, or viewer")
+        fields.append("role = %s"); values.append(role)
+    if payload.password is not None:
+        fields.append("password_hash = %s"); values.append(hash_password(payload.password))
+    if payload.is_active is not None:
+        fields.append("is_active = %s"); values.append(payload.is_active)
+    if not fields:
+        raise HTTPException(400, "No changes supplied")
+    fields.append("updated_at = NOW()")
+    values.append(user_id)
+    rows = execute_transaction(
+        "UPDATE public.dashboard_users SET " + ", ".join(fields) +
+        " WHERE id = %s RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at",
+        values, "auth.admin_update_user",
+    )
+    if not rows:
+        raise HTTPException(404, "User not found")
+    return {"user": public_user(rows[0])}
+
+
+@app.post("/api/admin/data-import")
+def admin_data_import(payload: DataImportRequest, request: Request):
+    require_admin(request)
+    table = payload.table.strip().lower()
+    allowed_tables = {
+        "sales_data", "target_data", "staff_master", "call_data",
+        "pharma_provider_calls", "fmcg_exception", "fmcg_cust_call",
+    }
+    if table not in allowed_tables:
+        raise HTTPException(400, "The selected table is not approved for dashboard imports")
+    columns = query(
+        """SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = %s
+           ORDER BY ordinal_position""",
+        [table], "auth.import_columns",
+    )
+    allowed_columns = {row[0] for row in columns}
+    if not allowed_columns:
+        raise HTTPException(404, f"Table '{table}' was not found")
+    requested = set().union(*(row.keys() for row in payload.rows))
+    unknown = requested - allowed_columns
+    if unknown:
+        raise HTTPException(400, "Unknown columns: " + ", ".join(sorted(unknown)))
+    if not requested:
+        raise HTTPException(400, "Each row must contain at least one column")
+    ordered_columns = sorted(requested)
+    values = [[row.get(column) for column in ordered_columns] for row in payload.rows]
+    conn = None
+    try:
+        conn = pool.getconn()
+        with conn.cursor() as cursor:
+            statement = pgsql.SQL("INSERT INTO public.{} ({}) VALUES %s").format(
+                pgsql.Identifier(table), pgsql.SQL(", ").join(pgsql.Identifier(column) for column in ordered_columns),
+            )
+            execute_values(cursor, statement.as_string(conn), values, page_size=500)
+        conn.commit()
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        raise HTTPException(400, f"Import failed: {exc}") from exc
+    finally:
+        if conn is not None:
+            pool.putconn(conn)
+    return {"table": table, "rows_inserted": len(values), "columns": ordered_columns}
 
 
 @app.get("/api/meta")
@@ -663,8 +1036,8 @@ def _kpis_uncached(
 
     sales_month = f"{d.strftime('%B')},{d.strftime('%y')}"          # July,26
     sfx = f"{d.strftime('%b').lower()}_{d.strftime('%y')}"           # jul_26
-    # call_data currently contains FMCG records and uses both `Jul-26` and
-    # `Jul,26` month styles. Support both while new extracts are standardized.
+    # Call-source extracts use `Jul-26`; retain `Jul,26` compatibility for
+    # older imports while the source files are standardized.
     call_months = [f"{d.strftime('%b')}-{d.strftime('%y')}", f"{d.strftime('%b')},{d.strftime('%y')}"]
     scope_positions = (resolve_authorized_positions(
         designation, region, zone, subzone, territory, employee, team,
@@ -1155,81 +1528,150 @@ def _kpis_uncached(
     for customer in spo_sections["top_customers"] + spo_sections["bottom_customers"]:
         customer["performance_pct"] = round(max(0, customer["net_sales"]) / all_positive_sales * 100, 1) if all_positive_sales > 0 else None
 
-    # Call/activity data currently exists for FMCG only. It is scoped through
-    # the same staff hierarchy as the sales dashboard so employee and territory
-    # filters continue to apply without a separate filter system.
-    call_data = {"available": team != "PHARMA", "manager_days": [], "shops": [],
-                 "outcomes": {"accepted": 0, "rejected": 0, "shop_closed": 0, "total": 0}}
-    if team != "PHARMA":
+    # Call data uses ff_id while dashboard filters use staff position codes.
+    # The source ids are zero-padded versions of staff_master.hawk_emp_id, so
+    # this join keeps every hierarchy, employee, region, and territory filter.
+    call_source = "PHARMA" if team == "PHARMA" else "FMCG"
+    call_data = {
+        "available": True, "source_type": call_source, "manager_days": [], "shops": [],
+        "outcomes": {"accepted": 0, "rejected": 0, "shop_closed": 0, "total": 0},
+        "exceptions": {"total": 0, "attendance": 0, "leave": 0, "other": 0},
+    }
+    staff_call_join = (
+        "LTRIM(TRIM(sm.hawk_emp_id), '0') = LTRIM(TRIM(c.ff_id), '0')"
+    )
+    if call_source == "PHARMA":
         manager_sql = f"""{cte}
           SELECT COALESCE(NULLIF(TRIM(c.manager), ''), 'Unassigned') AS manager,
-                 COALESCE(NULLIF(TRIM(c.ff_name), ''), sm.employee_name, c.position_code) AS employee,
-                 c.position_code,
+                 COALESCE(NULLIF(TRIM(sm.employee_name), ''), NULLIF(TRIM(c.ff_name), ''), c.ff_id) AS employee,
+                 sm.position_code,
                  COUNT(DISTINCT c.call_date) AS call_days,
-                 SUM(c.calls) AS calls
-          FROM call_data_rollup c
-          JOIN staff_master sm ON sm.position_code = c.position_code
-          WHERE c.kind = 'manager_day'
-            AND c.position_code IN (SELECT position_code FROM scope)
+                 SUM(COALESCE(c.no_of_calls, 1)) AS calls
+          FROM public.pharma_provider_calls c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
             AND c.month = ANY(%s)
-            AND UPPER(TRIM(sm.designation_name)) = 'SPO'
-          GROUP BY c.manager, c.ff_name, sm.employee_name, c.position_code
+          GROUP BY c.manager, c.ff_name, c.ff_id, sm.employee_name, sm.position_code
           ORDER BY call_days DESC, calls DESC, employee
           LIMIT 10"""
-        shops_sql = f"""{cte}, shop_counts AS (
-          SELECT c.customer_name, SUM(c.calls) AS calls
-          FROM call_data_rollup c
-          WHERE c.kind = 'shop_month'
-            AND c.position_code IN (SELECT position_code FROM scope)
+        shops_sql = f"""{cte}
+          SELECT COALESCE(NULLIF(TRIM(c.doctorname), ''), 'Unknown provider') AS provider_name,
+                 SUM(COALESCE(c.no_of_calls, 1)) AS calls,
+                 COUNT(DISTINCT c.call_date) AS call_days
+          FROM public.pharma_provider_calls c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
             AND c.month = ANY(%s)
-          GROUP BY c.customer_name
-        ), candidates AS (
-          SELECT customer_name, calls FROM shop_counts
-          ORDER BY calls DESC FETCH FIRST 10 ROWS WITH TIES
-        ), day_counts AS (
-          SELECT d.customer_name, COUNT(DISTINCT d.call_date) AS call_days
-          FROM call_data_rollup d
-          JOIN candidates top ON d.customer_name IS NOT DISTINCT FROM top.customer_name
-          WHERE d.kind = 'shop_day'
-            AND d.position_code IN (SELECT position_code FROM scope)
-            AND d.month = ANY(%s)
-          GROUP BY d.customer_name
-        )
-        SELECT COALESCE(NULLIF(TRIM(top.customer_name), ''), 'Unknown shop') AS customer_name,
-               top.calls, COALESCE(days.call_days, 0)
-        FROM candidates top
-        LEFT JOIN day_counts days ON days.customer_name IS NOT DISTINCT FROM top.customer_name
-        ORDER BY top.calls DESC, days.call_days DESC, customer_name
-        LIMIT 10"""
+          GROUP BY c.doctorname
+          ORDER BY calls DESC, call_days DESC, provider_name
+          LIMIT 10"""
         outcomes_sql = f"""{cte}
-          SELECT COALESCE(SUM(c.accepted), 0), COALESCE(SUM(c.rejected), 0),
-                 COALESCE(SUM(c.shop_closed), 0), COALESCE(SUM(c.calls), 0)
-          FROM call_data_rollup c
-          WHERE c.kind = 'outcome'
-            AND c.position_code IN (SELECT position_code FROM scope)
-            AND c.month = ANY(%s)
-          """
+          SELECT COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(REPLACE(TRIM(c.geometer_range), ' ', '')) = 'INRANGE'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(REPLACE(TRIM(c.geometer_range), ' ', '')) = 'OUTRANGE'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)), 0)
+          FROM public.pharma_provider_calls c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
+            AND c.month = ANY(%s)"""
         call_params = cte_params + [call_months]
         with ThreadPoolExecutor(max_workers=3) as executor:
-            manager_future = submit_query(executor, "kpis.call_managers", manager_sql, call_params)
-            shops_future = submit_query(executor, "kpis.call_shops", shops_sql, cte_params + [call_months, call_months])
-            outcomes_future = submit_query(executor, "kpis.call_outcomes", outcomes_sql, call_params)
+            manager_future = submit_query(executor, "kpis.pharma_call_managers", manager_sql, call_params)
+            shops_future = submit_query(executor, "kpis.pharma_call_providers", shops_sql, call_params)
+            outcomes_future = submit_query(executor, "kpis.pharma_call_range", outcomes_sql, call_params)
             manager_call_rows = manager_future.result()
             shop_call_rows = shops_future.result()
             outcome_row = outcomes_future.result()[0]
-        call_data["manager_days"] = [
-            {"manager": r[0], "employee": r[1], "position_code": r[2],
-             "call_days": int(r[3] or 0), "calls": int(r[4] or 0)}
-            for r in manager_call_rows
-        ]
-        call_data["shops"] = [
-            {"customer_name": r[0], "calls": int(r[1] or 0), "call_days": int(r[2] or 0)}
-            for r in shop_call_rows
-        ]
+        call_data["outcomes"] = {
+            "accepted": int(outcome_row[0] or 0), "rejected": int(outcome_row[1] or 0),
+            "shop_closed": 0, "total": int(outcome_row[2] or 0),
+        }
+    else:
+        manager_sql = f"""{cte}, call_activity AS (
+          SELECT c.ff_id, c.ff_name, c.manager, c.call_date, COALESCE(c.no_of_calls, 1) AS calls
+          FROM public.fmcg_cust_call c WHERE c.month = ANY(%s)
+          UNION ALL
+          SELECT c.ff_id, c.ff_name, c.manager, c.call_date, COALESCE(c.no_of_calls, 1) AS calls
+          FROM public.fmcg_exception c WHERE c.month = ANY(%s)
+        )
+          SELECT COALESCE(NULLIF(TRIM(c.manager), ''), 'Unassigned') AS manager,
+                 COALESCE(NULLIF(TRIM(sm.employee_name), ''), NULLIF(TRIM(c.ff_name), ''), c.ff_id) AS employee,
+                 sm.position_code,
+                 COUNT(DISTINCT c.call_date) AS call_days,
+                 SUM(c.calls) AS calls
+          FROM call_activity c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
+          GROUP BY c.manager, c.ff_name, c.ff_id, sm.employee_name, sm.position_code
+          ORDER BY call_days DESC, calls DESC, employee
+          LIMIT 10"""
+        shops_sql = f"""{cte}
+          SELECT COALESCE(NULLIF(TRIM(c.customer_name), ''), 'Unknown shop') AS customer_name,
+                 SUM(COALESCE(c.no_of_calls, 1)) AS calls,
+                 COUNT(DISTINCT c.call_date) AS call_days
+          FROM public.fmcg_cust_call c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
+            AND c.month = ANY(%s)
+          GROUP BY c.customer_name
+          ORDER BY calls DESC, call_days DESC, customer_name
+          LIMIT 10"""
+        outcomes_sql = f"""{cte}
+          SELECT COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(TRIM(c.\"order\")) = 'ACCEPTED'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(TRIM(c.\"order\")) = 'REJECTED'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(REPLACE(TRIM(c.\"order\"), ' ', '')) = 'SHOPCLOSED'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)), 0)
+          FROM public.fmcg_cust_call c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
+            AND c.month = ANY(%s)"""
+        exceptions_sql = f"""{cte}
+          SELECT COALESCE(SUM(COALESCE(c.no_of_calls, 1)), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(TRIM(c.call_nature)) = 'ATTENDANCE'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(TRIM(c.call_nature)) = 'LEAVE'), 0),
+                 COALESCE(SUM(COALESCE(c.no_of_calls, 1)) FILTER (
+                   WHERE UPPER(TRIM(c.call_nature)) NOT IN ('ATTENDANCE', 'LEAVE')), 0)
+          FROM public.fmcg_exception c
+          JOIN public.staff_master sm ON {staff_call_join}
+          WHERE sm.position_code IN (SELECT position_code FROM scope)
+            AND c.month = ANY(%s)"""
+        call_params = cte_params + [call_months]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            manager_future = submit_query(
+                executor, "kpis.fmcg_call_managers", manager_sql,
+                cte_params + [call_months, call_months],
+            )
+            shops_future = submit_query(executor, "kpis.fmcg_call_shops", shops_sql, call_params)
+            outcomes_future = submit_query(executor, "kpis.fmcg_call_outcomes", outcomes_sql, call_params)
+            exceptions_future = submit_query(executor, "kpis.fmcg_call_exceptions", exceptions_sql, call_params)
+            manager_call_rows = manager_future.result()
+            shop_call_rows = shops_future.result()
+            outcome_row = outcomes_future.result()[0]
+            exception_row = exceptions_future.result()[0]
         call_data["outcomes"] = {
             "accepted": int(outcome_row[0] or 0), "rejected": int(outcome_row[1] or 0),
             "shop_closed": int(outcome_row[2] or 0), "total": int(outcome_row[3] or 0),
         }
+        call_data["exceptions"] = {
+            "total": int(exception_row[0] or 0), "attendance": int(exception_row[1] or 0),
+            "leave": int(exception_row[2] or 0), "other": int(exception_row[3] or 0),
+        }
+
+    call_data["manager_days"] = [
+        {"manager": r[0], "employee": r[1], "position_code": r[2],
+         "call_days": int(r[3] or 0), "calls": int(r[4] or 0)}
+        for r in manager_call_rows
+    ]
+    call_data["shops"] = [
+        {"customer_name": r[0], "calls": int(r[1] or 0), "call_days": int(r[2] or 0)}
+        for r in shop_call_rows
+    ]
 
     manager_roles = {
         "ALL": ("RSM", "ASM", "SPO", "PS", "SB", "MIO", "ASMTE", "CM", "SPOWS", "TE"),
@@ -1745,8 +2187,22 @@ def ai_insights(
 
 
 @app.get("/")
-def index():
-    return FileResponse(FRONTEND_DIR / "html" / "index.html", media_type="text/html; charset=utf-8")
+def index(request: Request):
+    page = "index.html" if session_from_request(request) else "login.html"
+    return FileResponse(FRONTEND_DIR / "html" / page, media_type="text/html; charset=utf-8")
+
+
+@app.get("/admin")
+def admin_page(request: Request):
+    session = session_from_request(request)
+    if not session:
+        return RedirectResponse(url="/")
+    if session.get("role") != "admin":
+        return HTMLResponse(
+            "<h1>Administrator access required</h1><p>Your account cannot open this page.</p>",
+            status_code=403,
+        )
+    return FileResponse(FRONTEND_DIR / "html" / "admin.html", media_type="text/html; charset=utf-8")
 
 
 # Mount frontend assets from dedicated folders; never expose .env.

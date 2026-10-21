@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Administration | Executive Dashboard</title>
+  <link rel="stylesheet" href="/css/admin.css?v=20261020-1" />
+</head>
+<body class="admin-page">
+  <header class="admin-topbar">
+    <a class="admin-brand" href="/">
+      <img src="/images/greenstar-short.jfif" alt="Greenstar" />
+      <span>Dashboard Administration</span>
+    </a>
+    <div class="admin-actions"><span data-auth-user></span><a href="/">Dashboard</a><button id="logoutButton" type="button">Logout</button></div>
+  </header>
+  <main class="admin-shell">
+    <section class="admin-heading"><div><p class="eyebrow">Administrator only</p><h1>Manage access and data</h1><p>Create dashboard accounts and import approved data rows.</p></div></section>
+    <div id="adminMessage" class="admin-message" role="status" hidden></div>
+    <div class="admin-grid">
+      <section class="admin-card">
+        <div class="card-heading"><div><h2>Add user</h2><p>Give a team member the correct access level.</p></div></div>
+        <form id="userForm" class="admin-form">
+          <label>Full name<input name="full_name" required minlength="2" /></label>
+          <label>Username<input name="username" required minlength="3" autocomplete="off" /></label>
+          <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
+          <label>Role<select name="role"><option value="viewer">Viewer</option><option value="executive">Executive</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
+          <button class="primary-button" type="submit">Create user</button>
+        </form>
+      </section>
+      <section class="admin-card">
+        <div class="card-heading"><div><h2>Import data</h2><p>JSON rows are validated against the selected table schema.</p></div></div>
+        <form id="importForm" class="admin-form">
+          <label>Table<select name="table"><option value="sales_data">Sales data</option><option value="target_data">Target data</option><option value="staff_master">Staff master</option><option value="fmcg_cust_call">FMCG customer calls</option><option value="fmcg_exception">FMCG exceptions</option><option value="pharma_provider_calls">Pharma provider calls</option><option value="call_data">Legacy call data</option></select></label>
+          <label>Rows as JSON<textarea name="rows" rows="8" required placeholder='[{"position_code":"...","reporting_month":"September,26"}]'></textarea></label>
+          <button class="primary-button" type="submit">Import rows</button>
+        </form>
+      </section>
+    </div>
+    <section class="admin-card users-card"><div class="card-heading"><div><h2>Dashboard users</h2><p>Deactivate accounts without deleting their audit history.</p></div><button id="refreshUsers" class="secondary-button" type="button">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th>Action</th></tr></thead><tbody id="usersBody"><tr><td colspan="6">Loading users...</td></tr></tbody></table></div></section>
+  </main>
+  <script src="/js/auth.js?v=20261020-1"></script>
+  <script src="/js/admin.js?v=20261020-1"></script>
+</body>
+</html>

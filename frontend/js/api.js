@@ -708,34 +708,53 @@
       const callHeading = document.querySelector("#panel-4 .panel-ttl h2");
       const callDescription = document.querySelector("#panel-4 .panel-ttl p");
       const callDesignation = String(d.meta?.designation || "").toUpperCase();
+      const callSource = String(callData.source_type || "FMCG").toUpperCase();
+      const isPharmaCalls = callSource === "PHARMA";
       const isManagerCallView = ["ASM", "RSM"].includes(callDesignation);
-      const isFieldCallView = ["SPO", "MIO"].includes(callDesignation);
+      const isFieldCallView = ["SPO", "MIO", "PS", "SB", "ASMTE", "CM", "SPOWS", "TE"].includes(callDesignation);
       if (!callData.available) {
         if (callHeading) callHeading.textContent = "4. CALL DATA";
-        if (callDescription) callDescription.textContent = "Call data is currently available for FMCG only";
-        callBox.innerHTML = `<div class="empty-state"><p>FMCG call data is not available for the selected team yet.</p></div>`;
+        if (callDescription) callDescription.textContent = "Call data is unavailable for the selected scope";
+        callBox.innerHTML = `<div class="empty-state"><p>No call source is configured for the selected team.</p></div>`;
       } else if (isManagerCallView) {
         const rows = (callData.manager_days || []).slice(0, 10);
         const maxDays = Math.max(1, ...rows.map(row => Number(row.call_days || 0)));
         if (callHeading) callHeading.textContent = "4. MANAGER FIELD-WORK DAYS";
-        if (callDescription) callDescription.textContent = "Distinct days worked with each SPO (FMCG call data)";
+        if (callDescription) callDescription.textContent = isPharmaCalls ? "Distinct Pharma provider-call days by field employee" : "Distinct FMCG customer-call and exception days by field employee";
         callBox.innerHTML = rows.length ? `<div class="call-manager-chart"><div class="call-chart-title">SPO ACCOMPANIMENT DAYS</div><div class="hbar spo-data-scroll call-manager-list">${rows.map(row => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(row.employee)}</b><small>${html(row.manager)} · ${fmt(row.calls, 0)} calls</small></div><div class="hbar-track"><span class="hbar-fill call-days-fill" style="width:${Math.min(100, Number(row.call_days || 0) / maxDays * 100)}%"></span></div><div class="hbar-val call-days-val">${fmt(row.call_days, 0)}d</div></div>`).join("")}</div></div>` : `<div class="empty-state"><p>No SPO call-work days match the selected ASM/RSM scope and month.</p></div>`;
       } else if (isFieldCallView) {
         const shops = callData.shops || [];
         const maxCalls = Math.max(1, ...shops.map(row => Number(row.calls || 0)));
         const outcomes = callData.outcomes || {};
+        const exceptions = callData.exceptions || {};
         const decided = Number(outcomes.accepted || 0) + Number(outcomes.rejected || 0);
         const acceptedPct = decided ? Number(outcomes.accepted || 0) / decided * 100 : 0;
         const rejectedPct = decided ? 100 - acceptedPct : 0;
+        const entityPlural = isPharmaCalls ? "PROVIDERS" : "SHOPS";
+        const positiveLabel = isPharmaCalls ? "In Range" : "Accepted";
+        const negativeLabel = isPharmaCalls ? "Out Range" : "Rejected";
+        const ratioTitle = isPharmaCalls ? "CALL RANGE RATIO" : "CALL OUTCOME RATIO";
         if (callHeading) callHeading.textContent = "4. CALL PERFORMANCE";
-        if (callDescription) callDescription.textContent = "FMCG shop calls and accepted/rejected outcome ratio";
+        if (callDescription) callDescription.textContent = isPharmaCalls ? "Pharma provider calls and GPS range ratio" : "FMCG customer calls, outcomes, and exceptions";
         callBox.innerHTML = `<div class="call-field-charts"><section class="call-shop-chart"><div class="call-chart-title">TOP SHOPS BY TOTAL CALLS</div>${shops.length ? `<div class="hbar spo-data-scroll call-shop-list">${shops.map(row => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(row.customer_name)}</b><small>${fmt(row.call_days, 0)} call day${Number(row.call_days) === 1 ? "" : "s"}</small></div><div class="hbar-track"><span class="hbar-fill call-shop-fill" style="width:${Math.min(100, Number(row.calls || 0) / maxCalls * 100)}%"></span></div><div class="hbar-val call-shop-val">${fmt(row.calls, 0)}</div></div>`).join("")}</div>` : `<p class="call-no-data">No shop calls match the selected scope and month.</p>`}</section><section class="call-outcome-chart"><div class="call-chart-title">CALL OUTCOME RATIO</div><div class="call-outcome-donut" style="--accepted:${acceptedPct}%;"><div><b>${fmt(acceptedPct, 0)}%</b><small>Accepted</small></div></div><div class="call-outcome-legend"><span><i class="accepted"></i>Accepted <b>${fmt(outcomes.accepted || 0, 0)}</b></span><span><i class="rejected"></i>Rejected <b>${fmt(outcomes.rejected || 0, 0)}</b></span><small>Shop closed: ${fmt(outcomes.shop_closed || 0, 0)}</small></div></section></div>`;
+        const chartTitles = callBox.querySelectorAll(".call-chart-title");
+        if (chartTitles[0]) chartTitles[0].textContent = `TOP ${entityPlural} BY TOTAL CALLS`;
+        if (chartTitles[1]) chartTitles[1].textContent = ratioTitle;
+        const donutLabel = callBox.querySelector(".call-outcome-donut small");
+        if (donutLabel) donutLabel.textContent = positiveLabel;
+        const legendRows = callBox.querySelectorAll(".call-outcome-legend span");
+        if (legendRows[0]) legendRows[0].childNodes[1].textContent = positiveLabel + " ";
+        if (legendRows[1]) legendRows[1].childNodes[1].textContent = negativeLabel + " ";
+        const noCallData = callBox.querySelector(".call-no-data");
+        if (noCallData) noCallData.textContent = `No ${entityPlural.toLowerCase()} calls match the selected scope and month.`;
         const outcomeDetail = callBox.querySelector(".call-outcome-legend small");
-        if (outcomeDetail) outcomeDetail.textContent = `Accepted ${fmt(acceptedPct, 0)}% | Rejected ${fmt(rejectedPct, 0)}% | Shop closed: ${fmt(outcomes.shop_closed || 0, 0)}`;
+        if (outcomeDetail) outcomeDetail.textContent = isPharmaCalls
+          ? `In Range ${fmt(acceptedPct, 0)}% | Out Range ${fmt(rejectedPct, 0)}%`
+          : `Accepted ${fmt(acceptedPct, 0)}% | Rejected ${fmt(rejectedPct, 0)}% | Shop closed: ${fmt(outcomes.shop_closed || 0, 0)} | Exceptions: ${fmt(exceptions.total || 0, 0)}`;
       } else {
         if (callHeading) callHeading.textContent = "4. CALL DATA";
-        if (callDescription) callDescription.textContent = "FMCG call data is currently mapped for ASM/RSM and SPO/MIO";
-        callBox.innerHTML = `<div class="empty-state"><p>Select ASM/RSM to review SPO field-work days, or SPO/MIO to review shop call outcomes.</p></div>`;
+        if (callDescription) callDescription.textContent = `${callSource} call data follows the selected dashboard scope`;
+        callBox.innerHTML = `<div class="empty-state"><p>Select ASM/RSM for field-work days or a field designation for detailed call performance.</p></div>`;
       }
     }
     const sm = d.spo_metrics || {}, gap = sm.target_gap || 0;
@@ -1231,11 +1250,6 @@
     }
   }
 
-  function cleanRegion(r) {
-    if (!r || r === "All" || r === "ALL") return "";
-    return String(r).replace(/-\d+$/, "").trim();
-  }
-
   function formatFullMonth(monthStr, fyStr) {
     if (!monthStr || monthStr === "All" || monthStr === "ALL") return "";
     const monthMap = {
@@ -1259,18 +1273,10 @@
     return m;
   }
 
-  function extractDepartment(record, positionCode, team) {
-    if (record && record.department) return record.department;
-    const code = positionCode || (record && (record.position_code || record.dept_territory_code || record.territory)) || "";
-    if (code && code.includes("-")) {
-      const parts = code.split("-");
-      if (parts.length >= 2 && parts[1]) {
-        return parts[1];
-      }
-    }
-    const t = String(team || "").toUpperCase();
-    if (t.includes("PHARM")) return "PHR";
-    if (t.includes("FMCG") || t.includes("FAST")) return "FMCG";
+  function normalizeTeamLabel(team) {
+    const value = String(team || "").trim().toUpperCase();
+    if (value.includes("FMCG") || value.includes("FAST MOVING")) return "FMCG";
+    if (value.includes("PHAR") || value === "PHR") return "PHARMA";
     return "";
   }
 
@@ -1288,7 +1294,8 @@
                 (record && record.region) ||
                 effectiveSelections.region ||
                 $("fRegion")?.value || "";
-    return cleanRegion(reg);
+    if (!reg || reg === "All" || reg === "ALL") return "";
+    return String(reg).trim();
   }
 
   function extractZone(meta, record) {
@@ -1317,8 +1324,8 @@
       : (effectiveSelections.employee !== "All" ? effectiveSelections.employee : ($("fName")?.value !== "All" ? $("fName")?.value : ""));
     const employeeName = selectedEmployee ? String(selectedEmployee).trim() : "";
 
-    const rawTeam = (currentMeta.team || currentMeta.team_filter || $("fTeam")?.value || (activeEmployeeRecord && activeEmployeeRecord.team_filter) || "COMBINED").toUpperCase();
-    const teamDisplay = rawTeam === "PHARMA" ? "PHARMA" : (rawTeam === "FMCG" ? "FMCG" : "");
+    const rawTeam = currentMeta.team || currentMeta.team_filter || $("fTeam")?.value || (activeEmployeeRecord && activeEmployeeRecord.team_filter) || "COMBINED";
+    const teamDisplay = normalizeTeamLabel(rawTeam);
 
     const rawDesig = (currentMeta.designation || activeEmployeeRecord?.designation || $("fDesignation")?.value || "").toUpperCase();
     const designationDisplay = (rawDesig && rawDesig !== "ALL") ? rawDesig : "";
@@ -1327,26 +1334,23 @@
     // stay in the filter and scope context instead of replacing the view name.
     let line1 = "";
     if (designationDisplay) {
-      line1 = `${designationDisplay} Dashboard`;
+      line1 = `${designationDisplay} Dashboard${teamDisplay ? ` - ${teamDisplay}` : ""}`;
     } else {
       line1 = teamDisplay ? `${teamDisplay} EXECUTIVE DASHBOARD` : "EXECUTIVE DASHBOARD";
     }
 
-    // Line 2: [Department] | [Territory Code] | [Region] | [Selected Month]
-    const department = extractDepartment(activeEmployeeRecord, currentMeta.position_code || currentMeta.dept_territory_code, rawTeam);
+    // Line 2: [Employee] | [Territory Code] | [Region] | [Zone] | [Selected Month]
     const territoryCode = extractTerritoryCode(currentMeta, activeEmployeeRecord);
     const regionName = extractRegion(currentMeta, activeEmployeeRecord);
     const zoneName = extractZone(currentMeta, activeEmployeeRecord);
     const formattedMonth = extractMonth(currentMeta);
 
     const line2Parts = [];
-    if (department) line2Parts.push(department);
+    if (employeeName) line2Parts.push(employeeName);
     if (territoryCode) line2Parts.push(territoryCode);
-    if (regionName) {
-      line2Parts.push(regionName);
-    } else if (zoneName) {
-      line2Parts.push(zoneName + " Zone");
-    } else if (!territoryCode && !employeeName) {
+    if (regionName) line2Parts.push(regionName);
+    if (zoneName) line2Parts.push(zoneName);
+    if (!employeeName && !territoryCode && !regionName && !zoneName) {
       line2Parts.push("National Scope");
     }
     if (formattedMonth) line2Parts.push(formattedMonth);

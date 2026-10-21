@@ -15,7 +15,8 @@ class CacheInvalidationMigrationTests(unittest.TestCase):
     def test_all_dashboard_sources_bump_shared_generation(self):
         for table in (
             "sales_data", "target_data", "staff_master", "call_data",
-            "call_data_rollup", "sales_monthly_summary_refresh_state",
+            "call_data_rollup", "pharma_provider_calls", "fmcg_exception",
+            "fmcg_cust_call", "sales_monthly_summary_refresh_state",
         ):
             self.assertIn(f"'{table}'", MIGRATION)
         for event in ("INSERT", "UPDATE", "DELETE", "TRUNCATE"):

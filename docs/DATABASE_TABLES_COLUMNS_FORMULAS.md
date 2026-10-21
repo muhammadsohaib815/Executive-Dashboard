@@ -1,6 +1,6 @@
 # Database tables: columns, formulas, and purpose
 
-This document covers the 13 PostgreSQL tables used by the Executive Dashboard. The live schema column counts were checked on 20 October 2026. None of these columns is a PostgreSQL generated column. Original data values come from imports; summary values are calculated by refresh jobs and triggers.
+This document covers the 17 PostgreSQL tables used by the Executive Dashboard. The live schema column counts were checked on 20 October 2026. None of these columns is a PostgreSQL generated column. Original data values come from imports; summary values are calculated by refresh jobs and triggers.
 
 ## Table overview
 
@@ -11,6 +11,9 @@ This document covers the 13 PostgreSQL tables used by the Executive Dashboard. T
 | `staff_master` | 33 | Employees, positions, geography, and reporting hierarchy. |
 | `call_data` | 15 | Original field-force call records. |
 | `call_data_rollup` | 11 | Precalculated FMCG calls by manager, shop, day, and outcome. |
+| `fmcg_cust_call` | 16 | FMCG customer calls, order outcomes, call counts, and GPS range. This is the current FMCG Call Performance source. |
+| `fmcg_exception` | 17 | FMCG attendance, leave, and other exception activity. |
+| `pharma_provider_calls` | 17 | Pharma provider calls, products detailed, and GPS range. |
 | `cpd_phr_daily_stock_ledger` | 30 | Daily product and depot stock records. The current dashboard does not use this incomplete connected ledger. |
 | `sales_monthly_position_summary` | 24 | Monthly sales totals per staff position. |
 | `sales_monthly_product_summary` | 26 | Monthly sales totals per product and product group. |
@@ -19,6 +22,7 @@ This document covers the 13 PostgreSQL tables used by the Executive Dashboard. T
 | `sales_monthly_summary_dirty_period` | 4 | Months whose source sales changed and need refreshing. |
 | `sales_monthly_summary_refresh_state` | 4 | Last successful refresh and source row count for each month. |
 | `dashboard_cache_generation` | 3 | Version counter that invalidates cached dashboard responses after data changes. |
+| `dashboard_users` | 9 | Login identities, password hashes, roles, account status, and login timestamps. |
 
 ## Original data tables
 
@@ -59,6 +63,24 @@ The target values are imported. This repository does not define their original P
 `team`, `position_code`, `ff_id`, `ff_name`, `month`, `call_date`, `manager`, `base_town`, `customer_name`, `ww`, `call_type`, `order`, `rejection`, `total_sum_of_calls`, `geometer_range`.
 
 These are imported call details. The rollup counts source rows and classifies `order`; its `calls` field does not sum `total_sum_of_calls`.
+
+### `fmcg_cust_call` — 16 columns
+
+`team`, `ff_id`, `ff_name`, `month`, `call_date`, `manager`, `base_town`, `customer_name`, `ww`, `call_type`, `order`, `rejection`, `lng`, `lat`, `no_of_calls`, `geometer_range`.
+
+The Call Performance panel uses this table for FMCG. Top shops use `SUM(COALESCE(no_of_calls, 1))`; call days use `COUNT(DISTINCT call_date)`. Accepted, rejected, and shop-closed totals sum the same call measure for rows whose normalized `order` is `ACCEPTED`, `REJECTED`, or `SHOPCLOSED`.
+
+### `fmcg_exception` — 17 columns
+
+`ff_id`, `ff_name`, `team`, `month`, `call_date`, `manager`, `base_town`, `pmdc`, `doctorname`, `call_type`, `call_nature`, `ww`, `lng`, `lat`, `no_of_calls`, `no_of_products`, `geometer_range`.
+
+The panel reports total FMCG exceptions and separates `Attendance`, `Leave`, and other `call_nature` values. Manager activity combines customer-call and exception dates before counting distinct work days.
+
+### `pharma_provider_calls` — 17 columns
+
+This table has the same columns as `fmcg_exception`. For Pharma, `doctorname` identifies the provider. Top providers use `SUM(COALESCE(no_of_calls, 1))`; call days use `COUNT(DISTINCT call_date)`. The range ratio classifies normalized `geometer_range` values as `INRANGE` or `OUTRANGE`.
+
+All three current call sources link `ff_id` to `staff_master.hawk_emp_id` after leading-zero normalization. This applies the same employee, designation, territory, region, zone, and reporting hierarchy scope used by the sales dashboard.
 
 ### `cpd_phr_daily_stock_ledger` — 30 columns
 
@@ -117,7 +139,7 @@ These formulas are implemented in [`scripts/db/refresh_sales_monthly_summaries.p
 | `shop_day` | Month, position, customer, call date; `calls = COUNT(*)`. |
 | `outcome` | Month and position; `calls = COUNT(*)`. `accepted`, `rejected`, and `shop_closed` count rows whose trimmed, uppercase `order` is `ACCEPTED`, `REJECTED`, or `SHOPCLOSED`, respectively. |
 
-Only FMCG source rows with a non-null month and position enter this rollup. Triggers adjust its counts when `call_data` changes. The definitions are in [`db/call_data_rollup.sql`](../db/call_data_rollup.sql) and [`db/call_data_rollup_triggers.sql`](../db/call_data_rollup_triggers.sql).
+Only legacy FMCG source rows with a non-null month and position enter this rollup. Triggers adjust its counts when `call_data` changes. The current Call Performance panel reads the three dedicated call tables described above. The legacy definitions remain in [`db/call_data_rollup.sql`](../db/call_data_rollup.sql) and [`db/call_data_rollup_triggers.sql`](../db/call_data_rollup_triggers.sql).
 
 ## Refresh and cache control tables
 
@@ -132,6 +154,12 @@ Only FMCG source rows with a non-null month and position enter this rollup. Trig
 ### `dashboard_cache_generation` — 3 columns
 
 `singleton`, `generation`, `changed_at`. This table has one row. Data-change triggers increment `generation` and update `changed_at`, so API workers discard stale cached responses. See [`db/migrations/004_dashboard_cache_invalidation.sql`](../db/migrations/004_dashboard_cache_invalidation.sql).
+
+### `dashboard_users` — 9 columns
+
+`id`, `username`, `full_name`, `password_hash`, `role`, `is_active`, `created_at`, `updated_at`, and `last_login_at`.
+
+The table stores dashboard login identities. `password_hash` contains a PBKDF2-HMAC-SHA256 hash generated by the API, never a plaintext password. `role` is one of `admin`, `executive`, `manager`, or `viewer`; only `admin` can use the administration panel and data-import endpoint. The table is created by [`db/migrations/006_dashboard_auth.sql`](../db/migrations/006_dashboard_auth.sql).
 
 ## Main dashboard KPI formulas
 

@@ -58,7 +58,7 @@
     if (headerControls) {
       button.classList.add("header-filter-toggle");
       button.innerHTML = icon("filter");
-      headerControls.append(button);
+      headerControls.insertBefore(button, $("adminLink") || $("logoutButton") || null);
     } else {
       button.innerHTML = `${icon("filter")}<span>Filters</span><b class="filter-count">0</b><span class="filter-chevron">⌄</span>`;
       wrap.append(button);

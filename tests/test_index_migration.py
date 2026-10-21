@@ -45,6 +45,15 @@ class IndexMigrationTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             check_index(invalid, "idx_sales_data_product_month", "sales_data")
 
+    def test_call_performance_indexes_and_rollback_are_separate(self):
+        created = {command_target(command)[1] for command in statements(MIGRATIONS["007"])}
+        dropped = {command_target(command)[1] for command in statements(MIGRATIONS["007-rollback"])}
+        self.assertEqual(created, {
+            "idx_fmcg_cust_call_month_ff", "idx_fmcg_exception_month_ff",
+            "idx_pharma_provider_calls_month_ff",
+        })
+        self.assertEqual(created, dropped)
+
 
 if __name__ == "__main__":
     unittest.main()

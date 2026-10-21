@@ -15,7 +15,7 @@ change has marked a period dirty.
 | Customer ranking and first purchase | customer summary | preserves exact customer identity and positive sale state |
 | AI employee and product analysis | position, position product, and customer summaries | uses the narrowest grain that supports each filter and exact calculation |
 | Depot diagnosis | `sales_data` | depot is not present in the validated summaries |
-| Call activity | `call_data_rollup` | separate activity source |
+| Call activity | `fmcg_cust_call`, `fmcg_exception`, `pharma_provider_calls` | dedicated FMCG and Pharma activity sources scoped through `staff_master` |
 | Targets | `target_data` | the table is small and its month columns already match the requested target formulas |
 
 Single-position field-force requests and the legacy SKU endpoint retain their

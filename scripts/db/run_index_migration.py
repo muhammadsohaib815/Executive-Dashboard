@@ -12,12 +12,24 @@ MIGRATIONS = {
     "001": ROOT / "db/migrations/001_existing_dashboard_indexes.sql",
     "002": ROOT / "db/migrations/002_sales_query_indexes.sql",
     "002-rollback": ROOT / "db/migrations/002_sales_query_indexes_rollback.sql",
+    "007": ROOT / "db/migrations/007_call_performance_indexes.sql",
+    "007-rollback": ROOT / "db/migrations/007_call_performance_indexes_rollback.sql",
 }
 NEW_INDEX_SIGNATURES = {
     "idx_sales_data_product_month": ("(product_no, reporting_month)", False),
     "idx_sales_data_first_buy_positive": (
         "(position_code, cust_number, reporting_month)", True
     ),
+    "idx_fmcg_cust_call_month_ff": ("(month, ff_id)", False),
+    "idx_fmcg_exception_month_ff": ("(month, ff_id)", False),
+    "idx_pharma_provider_calls_month_ff": ("(month, ff_id)", False),
+}
+INDEX_TABLES = {
+    "idx_sales_data_product_month": "sales_data",
+    "idx_sales_data_first_buy_positive": "sales_data",
+    "idx_fmcg_cust_call_month_ff": "fmcg_cust_call",
+    "idx_fmcg_exception_month_ff": "fmcg_exception",
+    "idx_pharma_provider_calls_month_ff": "pharma_provider_calls",
 }
 
 
@@ -88,7 +100,8 @@ def command_target(command):
     if create:
         return "create", create.group(1), create.group(2)
     drop = re.match(r"DROP INDEX CONCURRENTLY IF EXISTS public\.(\w+)", command, re.IGNORECASE)
-    return "drop", drop.group(1), "sales_data"
+    name = drop.group(1)
+    return "drop", name, INDEX_TABLES.get(name, "sales_data")
 
 
 def main():

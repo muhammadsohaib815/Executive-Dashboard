@@ -48,7 +48,8 @@ python -m scripts.db.install_dashboard_cache_invalidation --expect-db <database-
 
 Statement triggers increment the generation in the same transaction as changes
 to `sales_data`, `target_data`, `staff_master`, `call_data`, `call_data_rollup`,
-or `sales_monthly_summary_refresh_state`. Every cacheable request reads this
+`fmcg_cust_call`, `fmcg_exception`, `pharma_provider_calls`, or
+`sales_monthly_summary_refresh_state`. Every cacheable request reads this
 small generation row. A new generation clears local caches before lookup, so a
 committed import or refresh is not held until TTL expiry. Rolled back data changes
 also roll back the generation increment.
