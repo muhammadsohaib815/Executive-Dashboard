@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261020-9" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261021-4" />
 </head>
 <body class="executive-page">
   <div class="app executive-dashboard" id="app" data-designation="HOD">
@@ -46,7 +46,16 @@
           <button type="button" data-value-metric="units" aria-pressed="false">Units</button>
           <button type="button" data-value-metric="cyp" aria-pressed="false">CYP</button>
         </div>
-        <a id="adminLink" class="admin-link" href="/admin" hidden>Admin</a>
+        <div class="user-menu" id="userMenu">
+          <button id="userMenuButton" class="user-menu-button" type="button" aria-expanded="false" aria-controls="userMenuPanel" hidden>
+            <span data-auth-first-name>User</span><span id="notificationBadge" class="notification-badge" hidden>0</span>
+          </button>
+          <div id="userMenuPanel" class="user-menu-panel" hidden>
+            <div class="user-menu-heading"><strong data-auth-user></strong><span>Action plan notifications</span></div>
+            <a id="adminLink" class="admin-link" href="/admin" hidden>Administration</a>
+            <div id="notificationList" class="notification-list"><p class="notification-empty">Loading notifications…</p></div>
+          </div>
+        </div>
         <button id="logoutButton" class="logout-button" type="button" hidden>Logout</button>
       </div>
 
@@ -134,9 +143,9 @@
 
   <script src="/js/config.js?v=20261008-10"></script>
   <script src="/js/components.js?v=20261009-4"></script>
-  <script src="/js/api.js?v=20261020-7"></script>
-  <script src="/js/app.js?v=20261020-3"></script>
+  <script src="/js/api.js?v=20261021-3"></script>
+  <script src="/js/app.js?v=20261021-3"></script>
   <script src="/js/ai-insights.js?v=20261012-3"></script>
-  <script src="/js/auth.js?v=20261021-2"></script>
+  <script src="/js/auth.js?v=20261021-3"></script>
 </body>
 </html>

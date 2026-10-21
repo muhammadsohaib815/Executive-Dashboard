@@ -793,7 +793,27 @@
       insightBox.innerHTML = finalRows.length ? finalRows.map((r, i) => `<details class="num-row section5-insight"><summary><span class="num n${i % 5}">${i + 1}</span><span class="section5-insight-summary"><b class="section5-insight-title">${html(r.title)}</b><small>Click for details</small></span></summary><div class="section5-insight-detail"><span class="section5-insight-finding"><strong>Finding:</strong> ${html(r.finding)}</span><small class="section5-insight-metrics">${r.metrics.map(html).join(" · ")}</small><span class="section5-insight-next"><strong>Next Step:</strong> ${html(r.next)}</span></div></details>`).join("") : '<div class="empty-state"><p>No actionable insights are available for this selection.</p></div>';
     }
     const actions = document.querySelector("[data-spo-actions]");
-    if (actions) actions.innerHTML = `<div class="form-grid"><label class="form-field wide"><span>Corrective Action:</span><textarea rows="3" placeholder="Add action based on the insights above..."></textarea></label><label class="form-field"><span>Action Owner:</span><input type="text"></label><label class="form-field"><span>Timeline / Due Date:</span><input type="text" placeholder="Due date"></label><label class="form-field"><span>Priority:</span><select><option>High</option><option>Medium</option><option>Low</option></select></label><label class="form-field"><span>Status:</span><select><option>Open</option><option>In Progress</option><option>Complete</option></select></label></div>`;
+    if (actions) {
+      actions.innerHTML = `<form class="form-grid action-plan-form" data-action-plan-form>
+        <label class="form-field wide"><span>Corrective Action:</span><textarea name="action_text" rows="3" required maxlength="4000" placeholder="Add action based on the insights above..."></textarea></label>
+        <label class="form-field"><span>Action Owner:</span><input name="action_owner" type="text" maxlength="200" placeholder="Owner name"></label>
+        <label class="form-field"><span>Timeline / Due Date:</span><input name="due_date" type="date"></label>
+        <label class="form-field"><span>Priority:</span><select name="priority"><option>High</option><option selected>Medium</option><option>Low</option></select></label>
+        <label class="form-field"><span>Status:</span><select name="status"><option>Open</option><option>In Progress</option><option>Complete</option></select></label>
+        <label class="form-field wide"><span>Send notification to:</span><select name="recipient_user_ids" class="action-recipient-select" multiple required size="4"><option>Loading team members…</option></select><small>Select one or more people in your reporting hierarchy.</small></label>
+        <div class="action-plan-submit wide"><button class="action-plan-send" type="submit">Save action plan and notify</button><span class="action-plan-message" role="status"></span></div>
+      </form>`;
+      const form = actions.querySelector("[data-action-plan-form]");
+      getJSON("/api/action-plan-recipients").then(({ recipients }) => {
+        const select = form?.querySelector("[name=recipient_user_ids]");
+        if (!select) return;
+        select.innerHTML = recipients.length ? recipients.map(r => `<option value="${Number(r.id)}">${html(r.full_name)} · ${html(r.role)} · ${html(r.position_code)}</option>`).join("") : "<option value=\"\">No assigned dashboard accounts are available in your hierarchy</option>";
+        select.disabled = !recipients.length;
+      }).catch(error => {
+        const select = form?.querySelector("[name=recipient_user_ids]");
+        if (select) { select.innerHTML = `<option value="">${html(error.message)}</option>`; select.disabled = true; }
+      });
+    }
   }
 
   function paintProductPanel(d) {
@@ -1370,5 +1390,25 @@
       document.title = `${line1} | Executive Sales Dashboard`;
     }
   }
+  document.addEventListener("submit", async event => {
+    const form = event.target.closest("[data-action-plan-form]");
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector("[type=submit]"), message = form.querySelector(".action-plan-message");
+    const values = Object.fromEntries(new FormData(form).entries());
+    values.due_date = values.due_date || null;
+    values.recipient_user_ids = [...form.querySelector("[name=recipient_user_ids]").selectedOptions].map(option => Number(option.value)).filter(Number.isInteger);
+    button.disabled = true; button.textContent = "Saving…"; message.textContent = ""; message.classList.remove("error");
+    try {
+      const response = await fetch("/api/action-plans", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "Could not save action plan");
+      form.reset(); message.textContent = `Saved and sent to ${result.recipients} recipient(s).`;
+      const select = form.querySelector("[name=recipient_user_ids]");
+      [...select.options].forEach(option => { option.selected = false; });
+    } catch (error) {
+      message.textContent = error.message; message.classList.add("error");
+    } finally { button.disabled = false; button.textContent = "Save action plan and notify"; }
+  });
   window.updateDashboardHeader = updateDashboardHeader;
 })();

@@ -116,6 +116,36 @@ body { min-height: 100vh; -webkit-font-smoothing: antialiased; }
 }
 .admin-link { display: inline-flex; align-items: center; color: #d9f2e5; border: 1px solid rgba(155,230,199,.55); text-decoration: none; }
 .admin-link:hover { background: rgba(255,255,255,.12); }
+.user-menu { position: relative; }
+.user-menu-button[hidden], .user-menu-panel[hidden] { display: none; }
+.admin-link[hidden] { display: none; }
+.user-menu-button { min-height: 38px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid rgba(155,230,199,.58); border-radius: 9px; color: #eaf9f0; background: rgba(255,255,255,.1); font: 800 12px "Inter",sans-serif; cursor: pointer; }
+.user-menu-button:hover, .user-menu-button:focus-visible { background: rgba(255,255,255,.2); outline: 2px solid rgba(228,248,238,.65); outline-offset: 2px; }
+.notification-badge { min-width: 19px; height: 19px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; border-radius: 99px; color: #fff; background: #e5383b; font-size: 10px; }
+.user-menu-panel { position: absolute; top: calc(100% + 9px); right: 0; z-index: 50; width: min(390px, calc(100vw - 24px)); max-height: min(70vh, 560px); overflow: auto; padding: 12px; border: 1px solid #cde5d8; border-radius: 13px; color: var(--ink); background: #fff; box-shadow: 0 14px 38px rgba(6,59,45,.25); }
+.user-menu-heading { display: grid; gap: 3px; margin-bottom: 8px; padding: 3px 3px 10px; border-bottom: 1px solid var(--line); }
+.user-menu-heading strong { color: var(--navy-900); font-size: 14px; }
+.user-menu-heading span { color: var(--muted); font-size: 11px; font-weight: 700; }
+.user-menu-panel .admin-link { display: flex; margin: 0 0 8px; color: var(--navy-800); border-color: var(--line); background: var(--blue-100); }
+.notification-list { display: grid; gap: 7px; }
+.notification-item { width: 100%; padding: 9px; display: grid; gap: 5px; text-align: left; border: 1px solid #d8ebe0; border-radius: 9px; color: var(--ink); background: #f7fcf9; cursor: pointer; }
+.notification-item:hover { border-color: var(--blue-500); background: #edfaf3; }
+.notification-item.is-unread { border-left: 3px solid var(--blue-600); background: #edf9f2; }
+.notification-item-top { display: flex; justify-content: space-between; gap: 8px; color: var(--navy-800); font-size: 10px; text-transform: uppercase; }
+.notification-item-top time { color: var(--muted); font-weight: 600; white-space: nowrap; text-transform: none; }
+.notification-action { font-size: 12px; font-weight: 700; line-height: 1.35; }
+.notification-meta { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.notification-empty { padding: 16px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+.action-plan-form { align-items: end; }
+.action-recipient-select { min-height: 92px; padding: 6px; border: 1px solid #cde5d8; border-radius: 8px; color: var(--ink); background: #fbfffd; font: 600 11px "Inter",sans-serif; }
+.action-recipient-select option { padding: 4px; }
+.action-plan-submit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.action-plan-send { min-height: 36px; padding: 8px 12px; border: 0; border-radius: 8px; color: #fff; background: var(--blue-600); font: 800 11px "Inter",sans-serif; cursor: pointer; }
+.action-plan-send:hover { background: var(--navy-800); }
+.action-plan-send:disabled { opacity: .65; cursor: wait; }
+.action-plan-message { color: var(--blue-700); font-size: 10px; font-weight: 700; }
+.action-plan-message.error { color: var(--red); }
+.action-plan-form label small { color: var(--muted); font-size: 10px; }
 .logout-button { border: 1px solid #8ddfba; color: #fff; background: rgba(255,255,255,.1); }
 .logout-button:hover { background: rgba(255,255,255,.2); }
 .team-state { display: none !important; }

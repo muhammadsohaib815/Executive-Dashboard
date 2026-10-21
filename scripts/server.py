@@ -50,6 +50,7 @@ from scripts.response_cache import TTLResponseCache
 
 FRONTEND_DIR = ROOT / "frontend"
 ASSETS_DIR = ROOT / "assets"
+REQUEST_SCOPE_POSITION = contextvars.ContextVar("request_scope_position", default=None)
 
 
 # ----------------------------------------------------------------- config
@@ -240,7 +241,8 @@ def _token_bytes(value: str) -> bytes:
 def create_session(user: dict) -> str:
     payload = {
         "uid": int(user["id"]), "username": user["username"],
-        "role": user["role"], "exp": int(time.time()) + AUTH_SESSION_TTL_SECONDS,
+        "role": user["role"], "scope_position_code": user.get("scope_position_code"),
+        "exp": int(time.time()) + AUTH_SESSION_TTL_SECONDS,
     }
     encoded = _token_part(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signature = hmac.new(AUTH_SECRET.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).digest()
@@ -273,7 +275,8 @@ def current_user(request: Request):
     if not session:
         raise HTTPException(401, "Authentication required")
     rows = query(
-        """SELECT id, username, full_name, role, is_active, created_at, last_login_at
+        """SELECT id, username, full_name, role, is_active, created_at, last_login_at,
+                  scope_position_code
            FROM public.dashboard_users WHERE id = %s LIMIT 1""",
         [session.get("uid")], "auth.current_user",
     )
@@ -284,6 +287,7 @@ def current_user(request: Request):
         "id": row[0], "username": row[1], "full_name": row[2], "role": row[3],
         "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
         "last_login_at": row[6].isoformat() if row[6] else None,
+        "scope_position_code": row[7],
     }
 
 
@@ -308,6 +312,7 @@ class UserCreateRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=8, max_length=256)
     role: str = Field(default="viewer", min_length=4, max_length=20)
+    scope_position_code: str | None = Field(default=None, max_length=120)
 
 
 class UserUpdateRequest(BaseModel):
@@ -315,6 +320,20 @@ class UserUpdateRequest(BaseModel):
     role: str | None = Field(default=None, min_length=4, max_length=20)
     password: str | None = Field(default=None, min_length=8, max_length=256)
     is_active: bool | None = None
+    scope_position_code: str | None = Field(default=None, max_length=120)
+
+
+class ActionPlanRequest(BaseModel):
+    action_text: str = Field(min_length=1, max_length=4000)
+    action_owner: str = Field(default="", max_length=200)
+    due_date: dt.date | None = None
+    priority: str = Field(default="Medium", max_length=20)
+    status: str = Field(default="Open", max_length=30)
+    recipient_user_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class NotificationReadRequest(BaseModel):
+    read: bool = True
 
 
 class DataImportRequest(BaseModel):
@@ -359,7 +378,7 @@ def cached_authorized_positions(generation, designation, region, zone, subzone,
     if generation is None:
         return compute()
     scope_cache.sync_generation(generation)
-    key = (generation, "scope", designation, region, zone, subzone, territory, employee, team)
+    key = (generation, "scope", REQUEST_SCOPE_POSITION.get(), designation, region, zone, subzone, territory, employee, team)
     return scope_cache.get_or_compute(key, compute)
 
 
@@ -462,6 +481,17 @@ def hierarchy_scope_cte(designation: str, region: str, zone: str, subzone: str,
                         team: str = "COMBINED"):
     """Build the authoritative staff hierarchy CTE and its parameters."""
     where, params = [team_predicate("staff_master.team_name", team)], []
+    request_anchor = REQUEST_SCOPE_POSITION.get()
+    request_cte = ""
+    if request_anchor:
+        request_cte = (
+            "WITH RECURSIVE request_positions(position_code) AS ("
+            "SELECT position_code FROM public.staff_master WHERE position_code = %s "
+            "UNION SELECT child.position_code FROM public.staff_master child "
+            "JOIN request_positions parent ON TRIM(child.report_to_position_code) = TRIM(parent.position_code)), "
+        )
+        params.append(request_anchor)
+        where.append("staff_master.position_code IN (SELECT position_code FROM request_positions)")
     all_designations = designation in {"ALL", "All"}
     has_terr = bool(territory) and territory != "All"
     national = designation == "HOD" and not has_terr and employee == "All"
@@ -478,13 +508,17 @@ def hierarchy_scope_cte(designation: str, region: str, zone: str, subzone: str,
             params.append(str(val).strip())
     predicates = " AND ".join(where) or "TRUE"
     if national or all_designations or designation in INDIVIDUAL:
-        sql = f"WITH scope AS (SELECT position_code FROM staff_master WHERE {predicates})"
+        if request_cte:
+            sql = f"{request_cte}scope AS (SELECT position_code FROM staff_master WHERE {predicates})"
+        else:
+            sql = f"WITH scope AS (SELECT position_code FROM staff_master WHERE {predicates})"
     else:
-        sql = (
-            "WITH RECURSIVE scope AS ("
+        sql = request_cte + (
+            "scope AS (" if request_cte else "WITH RECURSIVE scope AS ("
+        ) + (
             f"SELECT position_code FROM staff_master WHERE {predicates} "
             "UNION SELECT m.position_code FROM staff_master m "
-            "JOIN scope s ON m.report_to_position_code = s.position_code "
+            "JOIN scope s ON TRIM(m.report_to_position_code) = TRIM(s.position_code) "
             f"WHERE {team_predicate('m.team_name', team)})"
         )
     return sql, params
@@ -514,7 +548,7 @@ def resolve_reporting_tree(position_code: str):
           SELECT position_code FROM staff_master WHERE position_code = %s
           UNION
           SELECT m.position_code FROM staff_master m
-          JOIN scope parent ON m.report_to_position_code = parent.position_code
+          JOIN scope parent ON TRIM(m.report_to_position_code) = TRIM(parent.position_code)
         )
         SELECT DISTINCT position_code FROM scope
         WHERE position_code IS NOT NULL ORDER BY position_code""",
@@ -522,6 +556,11 @@ def resolve_reporting_tree(position_code: str):
         "hierarchy.reporting_tree",
     )
     return list(dict.fromkeys(row[0] for row in rows if row and row[0] is not None))
+
+
+def request_scope_positions():
+    anchor = REQUEST_SCOPE_POSITION.get()
+    return resolve_reporting_tree(anchor) if anchor else None
 
 
 def scope_cte(designation: str, region: str, zone: str, subzone: str, territory: str = "All",
@@ -588,6 +627,10 @@ def designation_options(team: str = "COMBINED"):
                   "UPPER(TRIM(designation_name)) NOT IN ('EXEC', 'HOD', 'DGM')",
                   team_predicate("team_name", team)]
     params = []
+    scoped_positions = request_scope_positions()
+    if scoped_positions is not None:
+        conditions.append("position_code = ANY(%s)")
+        params.append(scoped_positions)
     rows = query(
         "SELECT DISTINCT TRIM(designation_name) FROM staff_master WHERE "
         + " AND ".join(conditions) + " ORDER BY 1",
@@ -599,7 +642,14 @@ def designation_options(team: str = "COMBINED"):
 def check_designation(d: str):
     if d in {"ALL", "All"}:
         return
-    if not query("SELECT 1 FROM staff_master WHERE designation_name = %s LIMIT 1", [d]):
+    scoped_positions = request_scope_positions()
+    sql = "SELECT 1 FROM staff_master WHERE designation_name = %s"
+    params = [d]
+    if scoped_positions is not None:
+        sql += " AND position_code = ANY(%s)"
+        params.append(scoped_positions)
+    sql += " LIMIT 1"
+    if not query(sql, params):
         raise HTTPException(400, f"Unknown designation '{d}'")
 
 
@@ -621,10 +671,26 @@ async def require_api_session(request: Request, call_next):
     public = {
         "/api/auth/status", "/api/auth/login", "/api/auth/setup", "/api/auth/logout",
     }
+    scope_token = None
     if path.startswith("/api/") and path not in public and request.method != "OPTIONS":
-        if not session_from_request(request):
+        session = session_from_request(request)
+        if not session:
             return JSONResponse(status_code=401, content={"detail": "Authentication required"})
-    return await call_next(request)
+        users = query(
+            "SELECT role, is_active, scope_position_code FROM public.dashboard_users WHERE id = %s LIMIT 1",
+            [session.get("uid")], "auth.api_session_user",
+        )
+        if not users or not users[0][1]:
+            return JSONResponse(status_code=401, content={"detail": "Your account is inactive or no longer exists"})
+        if users[0][0] != "admin":
+            if not users[0][2]:
+                return JSONResponse(status_code=403, content={"detail": "Your account needs a staff hierarchy assignment. Contact an administrator."})
+            scope_token = REQUEST_SCOPE_POSITION.set(users[0][2])
+    try:
+        return await call_next(request)
+    finally:
+        if scope_token is not None:
+            REQUEST_SCOPE_POSITION.reset(scope_token)
 
 
 @app.exception_handler(DatabasePoolTimeout)
@@ -649,7 +715,23 @@ def public_user(row):
         "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
         "updated_at": row[6].isoformat() if row[6] else None,
         "last_login_at": row[7].isoformat() if row[7] else None,
+        "scope_position_code": row[8] if len(row) > 8 else None,
     }
+
+
+def validate_scope_position(scope_position_code, role):
+    if role == "admin":
+        return None
+    code = (scope_position_code or "").strip()
+    if not code:
+        raise HTTPException(400, "Select a staff position to assign this user's hierarchy access")
+    rows = query(
+        "SELECT position_code FROM public.staff_master WHERE TRIM(position_code) = %s LIMIT 1",
+        [code], "auth.validate_scope_position",
+    )
+    if not rows:
+        raise HTTPException(400, "The selected staff position does not exist")
+    return rows[0][0]
 
 
 @app.get("/api/auth/status")
@@ -696,18 +778,20 @@ def auth_login(payload: LoginRequest):
     username = payload.username.strip().lower()
     rows = query(
         """SELECT id, username, full_name, password_hash, role, is_active,
-                  created_at, updated_at, last_login_at
+                  created_at, updated_at, last_login_at, scope_position_code
            FROM public.dashboard_users WHERE LOWER(username) = %s LIMIT 1""",
         [username], "auth.login",
     )
     if not rows or not rows[0][5] or not verify_password(payload.password, rows[0][3]):
         raise HTTPException(401, "Invalid username or password")
     row = rows[0]
+    if row[4] != "admin" and not row[9]:
+        raise HTTPException(403, "Your account is active but needs a staff hierarchy assignment. Ask an administrator to assign your position.")
     execute_transaction(
         "UPDATE public.dashboard_users SET last_login_at = NOW(), updated_at = NOW() WHERE id = %s",
         [row[0]], "auth.last_login",
     )
-    user = {"id": row[0], "username": row[1], "full_name": row[2], "role": row[4]}
+    user = {"id": row[0], "username": row[1], "full_name": row[2], "role": row[4], "scope_position_code": row[9]}
     response = JSONResponse({"user": {**user, "is_active": row[5]}})
     set_session_cookie(response, user)
     return response
@@ -730,11 +814,29 @@ def admin_users(request: Request):
     require_admin(request)
     rows = query(
         """SELECT id, username, full_name, role, is_active, created_at,
-                  updated_at, last_login_at
+                  updated_at, last_login_at, scope_position_code
            FROM public.dashboard_users ORDER BY username""",
         [], "auth.admin_users",
     )
     return {"users": [public_user(row) for row in rows]}
+
+
+@app.get("/api/admin/staff")
+def admin_staff(request: Request):
+    require_admin(request)
+    rows = query(
+        """SELECT position_code, employee_name, designation_name, team_name,
+                  report_to_position_code, region_name, zone_name, sub_zone
+           FROM public.staff_master WHERE NULLIF(TRIM(position_code), '') IS NOT NULL
+           ORDER BY CASE UPPER(TRIM(designation_name)) WHEN 'RSM' THEN 1 WHEN 'ASM' THEN 2 WHEN 'MIO' THEN 3 WHEN 'SPO' THEN 4 ELSE 5 END,
+                    employee_name, position_code""",
+        [], "auth.admin_staff_hierarchy",
+    )
+    return {"staff": [
+        {"position_code": row[0], "employee": row[1], "designation": row[2], "team": row[3],
+         "reports_to": row[4], "region": row[5], "zone": row[6], "subzone": row[7]}
+        for row in rows
+    ]}
 
 
 @app.post("/api/admin/users")
@@ -747,13 +849,14 @@ def admin_create_user(payload: UserCreateRequest, request: Request):
         raise HTTPException(400, "role must be admin, executive, manager, or viewer")
     if not username or not full_name:
         raise HTTPException(400, "Username and full name are required")
+    scope_position_code = validate_scope_position(payload.scope_position_code, role)
     try:
         rows = execute_transaction(
             """INSERT INTO public.dashboard_users
-               (username, full_name, password_hash, role)
-               VALUES (%s, %s, %s, %s)
-               RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at""",
-            [username, full_name, hash_password(payload.password), role], "auth.admin_create_user",
+               (username, full_name, password_hash, role, scope_position_code)
+               VALUES (%s, %s, %s, %s, %s)
+               RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at, scope_position_code""",
+            [username, full_name, hash_password(payload.password), role, scope_position_code], "auth.admin_create_user",
         )
     except Exception as exc:
         if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
@@ -775,6 +878,12 @@ def admin_update_user(user_id: int, payload: UserUpdateRequest, request: Request
         if role not in AUTH_ROLES:
             raise HTTPException(400, "role must be admin, executive, manager, or viewer")
         fields.append("role = %s"); values.append(role)
+    else:
+        role_rows = query("SELECT role FROM public.dashboard_users WHERE id = %s", [user_id], "auth.admin_user_role")
+        role = role_rows[0][0] if role_rows else None
+    if payload.scope_position_code is not None or payload.role is not None:
+        scope_position_code = validate_scope_position(payload.scope_position_code, role)
+        fields.append("scope_position_code = %s"); values.append(scope_position_code)
     if payload.password is not None:
         fields.append("password_hash = %s"); values.append(hash_password(payload.password))
     if payload.is_active is not None:
@@ -785,7 +894,7 @@ def admin_update_user(user_id: int, payload: UserUpdateRequest, request: Request
     values.append(user_id)
     rows = execute_transaction(
         "UPDATE public.dashboard_users SET " + ", ".join(fields) +
-        " WHERE id = %s RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at",
+        " WHERE id = %s RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at, scope_position_code",
         values, "auth.admin_update_user",
     )
     if not rows:
@@ -837,6 +946,108 @@ def admin_data_import(payload: DataImportRequest, request: Request):
         if conn is not None:
             pool.putconn(conn)
     return {"table": table, "rows_inserted": len(values), "columns": ordered_columns}
+
+
+@app.get("/api/action-plan-recipients")
+def action_plan_recipients(request: Request):
+    user = current_user(request)
+    positions = request_scope_positions() if user["role"] != "admin" else None
+    if positions is None:
+        rows = query(
+            """SELECT id, full_name, role, scope_position_code FROM public.dashboard_users
+               WHERE is_active = TRUE AND role <> 'admin' AND scope_position_code IS NOT NULL
+               ORDER BY full_name""", [], "actions.recipients_admin",
+        )
+    else:
+        rows = query(
+            """SELECT id, full_name, role, scope_position_code FROM public.dashboard_users
+               WHERE is_active = TRUE AND role <> 'admin' AND scope_position_code = ANY(%s)
+               ORDER BY full_name""", [positions], "actions.recipients_scoped",
+        )
+    return {"recipients": [
+        {"id": row[0], "full_name": row[1], "role": row[2], "position_code": row[3]}
+        for row in rows
+    ]}
+
+
+@app.post("/api/action-plans")
+def create_action_plan(payload: ActionPlanRequest, request: Request):
+    user = current_user(request)
+    if not payload.action_text.strip():
+        raise HTTPException(400, "Corrective action is required")
+    if payload.priority not in {"High", "Medium", "Low"}:
+        raise HTTPException(400, "Priority must be High, Medium, or Low")
+    if payload.status not in {"Open", "In Progress", "Complete"}:
+        raise HTTPException(400, "Status must be Open, In Progress, or Complete")
+    recipient_ids = list(dict.fromkeys(payload.recipient_user_ids))
+    if not recipient_ids:
+        raise HTTPException(400, "Select at least one recipient")
+    positions = request_scope_positions() if user["role"] != "admin" else None
+    if positions is None:
+        allowed = query(
+            """SELECT id FROM public.dashboard_users WHERE id = ANY(%s)
+               AND is_active = TRUE AND role <> 'admin' AND scope_position_code IS NOT NULL""",
+            [recipient_ids], "actions.validate_recipients_admin",
+        )
+    else:
+        allowed = query(
+            """SELECT id FROM public.dashboard_users WHERE id = ANY(%s)
+               AND is_active = TRUE AND role <> 'admin' AND scope_position_code = ANY(%s)""",
+            [recipient_ids, positions], "actions.validate_recipients_scoped",
+        )
+    allowed_ids = {row[0] for row in allowed}
+    if allowed_ids != set(recipient_ids):
+        raise HTTPException(403, "One or more selected recipients are outside your reporting hierarchy")
+    rows = execute_transaction(
+        """WITH new_plan AS (
+             INSERT INTO public.dashboard_action_plans
+               (created_by_user_id, action_text, action_owner, due_date, priority, status)
+             VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+           )
+           INSERT INTO public.dashboard_action_plan_recipients (action_plan_id, recipient_user_id)
+           SELECT new_plan.id, selected.recipient_id
+           FROM new_plan CROSS JOIN unnest(%s::bigint[]) AS selected(recipient_id)
+           RETURNING action_plan_id""",
+        [user["id"], payload.action_text.strip(), payload.action_owner.strip(), payload.due_date,
+         payload.priority, payload.status, recipient_ids], "actions.create_plan",
+    )
+    return {"ok": True, "action_plan_id": rows[0][0], "recipients": len(recipient_ids)}
+
+
+@app.get("/api/notifications")
+def get_notifications(request: Request):
+    user = current_user(request)
+    rows = query(
+        """SELECT n.id, n.read_at, n.created_at, p.id, p.action_text, p.action_owner,
+                  p.due_date, p.priority, p.status, creator.full_name
+           FROM public.dashboard_notifications n
+           JOIN public.dashboard_action_plans p ON p.id = n.action_plan_id
+           JOIN public.dashboard_users creator ON creator.id = p.created_by_user_id
+           WHERE n.recipient_user_id = %s
+           ORDER BY n.created_at DESC, n.id DESC LIMIT 50""",
+        [user["id"]], "notifications.inbox",
+    )
+    return {"unread_count": sum(1 for row in rows if row[1] is None), "notifications": [
+        {"id": row[0], "read_at": row[1].isoformat() if row[1] else None,
+         "created_at": row[2].isoformat() if row[2] else None, "action_plan_id": row[3],
+         "action_text": row[4], "action_owner": row[5],
+         "due_date": row[6].isoformat() if row[6] else None, "priority": row[7],
+         "status": row[8], "sender": row[9]}
+        for row in rows
+    ]}
+
+
+@app.patch("/api/notifications/{notification_id}")
+def set_notification_read(notification_id: int, payload: NotificationReadRequest, request: Request):
+    user = current_user(request)
+    rows = execute_transaction(
+        """UPDATE public.dashboard_notifications SET read_at = CASE WHEN %s THEN NOW() ELSE NULL END
+           WHERE id = %s AND recipient_user_id = %s RETURNING id""",
+        [payload.read, notification_id, user["id"]], "notifications.mark_read",
+    )
+    if not rows:
+        raise HTTPException(404, "Notification not found")
+    return {"ok": True}
 
 
 @app.get("/api/meta")
@@ -896,6 +1107,10 @@ def filters(designation: str = "ALL", region: str = "All", zone: str = "All",
         "employee": ("region", "zone", "subzone", "territory"),
     }
     base_where, base_params = [], []
+    scoped_positions = request_scope_positions()
+    if scoped_positions is not None:
+        base_where.append("position_code = ANY(%s)")
+        base_params.append(scoped_positions)
     if designation not in {"ALL", "All"}:
         base_where.append("designation_name = %s")
         base_params.append(designation)
@@ -944,6 +1159,7 @@ def filters(designation: str = "ALL", region: str = "All", zone: str = "All",
 def employee_scope(employee: str = Query(..., min_length=1)):
     """Return the staff-master scope rows for an exact employee name."""
     employee = employee.strip()
+    scoped_positions = request_scope_positions()
     rows = query(f"""SELECT DISTINCT position_code, employee_name, designation_name,
           team_name, dept_territory_code, region_name, zone_name, sub_zone,
           department_name,
@@ -956,7 +1172,8 @@ def employee_scope(employee: str = Query(..., min_length=1)):
         FROM staff_master
         WHERE LOWER(TRIM(employee_name)) = LOWER(%s)
           AND {team_predicate('team_name', 'COMBINED')}
-        ORDER BY position_code""", [employee])
+          AND (%s::text[] IS NULL OR position_code = ANY(%s))
+        ORDER BY position_code""", [employee, scoped_positions, scoped_positions])
     if not rows:
         raise HTTPException(404, f"No staff-master record found for employee '{employee}'")
     records = []
@@ -983,6 +1200,7 @@ def territory_scope(territory: str = Query(..., min_length=1)):
     or hierarchy assignment.
     """
     territory = territory.strip()
+    scoped_positions = request_scope_positions()
     rows = query(f"""SELECT DISTINCT position_code,
           NULLIF(TRIM(employee_name), ''), NULLIF(TRIM(designation_name), ''),
           NULLIF(TRIM(team_name), ''), NULLIF(TRIM(dept_territory_code), ''),
@@ -996,7 +1214,8 @@ def territory_scope(territory: str = Query(..., min_length=1)):
         FROM staff_master
         WHERE TRIM(dept_territory_code) = %s
           AND {team_predicate('team_name', 'COMBINED')}
-        ORDER BY position_code""", [territory], "filters.territory_scope")
+          AND (%s::text[] IS NULL OR position_code = ANY(%s))
+        ORDER BY position_code""", [territory, scoped_positions, scoped_positions], "filters.territory_scope")
     if not rows:
         raise HTTPException(404, f"No staff-master record found for Dept Terr Code '{territory}'")
     return {"records": [
@@ -2201,10 +2420,11 @@ def dashboard_page(request: Request):
 
 @app.get("/admin")
 def admin_page(request: Request):
-    session = session_from_request(request)
-    if not session:
+    try:
+        user = current_user(request)
+    except HTTPException:
         return RedirectResponse(url="/")
-    if session.get("role") != "admin":
+    if user.get("role") != "admin":
         return HTMLResponse(
             "<h1>Administrator access required</h1><p>Your account cannot open this page.</p>",
             status_code=403,

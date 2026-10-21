@@ -25,6 +25,8 @@
           <label>Username<input name="username" required minlength="3" autocomplete="off" /></label>
           <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
           <label>Role<select name="role"><option value="viewer">Viewer</option><option value="executive">Executive</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
+          <label class="wide">Hierarchy access (staff position)<select id="newUserScope" name="scope_position_code" required><option value="">Load staff hierarchy…</option></select><small>RSM and ASM assignments automatically include all reporting positions below them.</small></label>
+          <div id="newUserScopePreview" class="scope-preview wide" hidden></div>
           <button class="primary-button" type="submit">Create user</button>
         </form>
       </section>
@@ -37,9 +39,9 @@
         </form>
       </section>
     </div>
-    <section class="admin-card users-card"><div class="card-heading"><div><h2>Dashboard users</h2><p>Deactivate accounts without deleting their audit history.</p></div><button id="refreshUsers" class="secondary-button" type="button">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th>Action</th></tr></thead><tbody id="usersBody"><tr><td colspan="6">Loading users...</td></tr></tbody></table></div></section>
+    <section class="admin-card users-card"><div class="card-heading"><div><h2>Dashboard users</h2><p>Each position assignment grants access to that position and everyone reporting beneath it.</p></div><button id="refreshUsers" class="secondary-button" type="button">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Hierarchy access</th><th>Status</th><th>Last login</th><th>Action</th></tr></thead><tbody id="usersBody"><tr><td colspan="7">Loading users...</td></tr></tbody></table></div></section>
   </main>
-  <script src="/js/auth.js?v=20261020-1"></script>
-  <script src="/js/admin.js?v=20261020-1"></script>
+  <script src="/js/auth.js?v=20261021-3"></script>
+  <script src="/js/admin.js?v=20261021-3"></script>
 </body>
 </html>
