@@ -25,7 +25,14 @@
           <label>Username<input name="username" required minlength="3" autocomplete="off" /></label>
           <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
           <label>Role<select name="role"><option value="viewer">Viewer</option><option value="executive">Executive</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
-          <label class="wide">Hierarchy access (staff position)<select id="newUserScope" name="scope_position_code" required><option value="">Load staff hierarchy…</option></select><small>RSM and ASM assignments automatically include all reporting positions below them.</small></label>
+          <div class="wide scope-picker" id="newUserScopePicker" data-scope-picker="newUserScope">
+            <strong>Hierarchy access</strong>
+            <div class="scope-filter-row">
+              <label>Designation<select data-scope-designation><option value="">All designations</option></select></label>
+              <label>Position code<div class="scope-search-box"><input type="search" data-scope-position-search placeholder="Search position code…" autocomplete="off"><input type="hidden" id="newUserScope" name="scope_position_code" data-scope-position required><div class="scope-position-menu" data-scope-position-menu hidden></div></div></label>
+            </div>
+            <small>Choose the manager or field position. The preview shows only the ASM, MIO and SPO positions reporting below it.</small>
+          </div>
           <div id="newUserScopePreview" class="scope-preview wide" hidden></div>
           <button class="primary-button" type="submit">Create user</button>
         </form>

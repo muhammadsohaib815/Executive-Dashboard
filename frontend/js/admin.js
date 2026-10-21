@@ -30,12 +30,73 @@
     }
     return [...found].map(code => positionMap().get(code)).filter(Boolean);
   }
-  function optionMarkup(selected = "") {
+  const uniqueRows = rows => {
     const seen = new Set();
-    return '<option value="">Select hierarchy position</option>' + staffRows.filter(row => {
-      if (!row.position_code || seen.has(row.position_code)) return false;
-      seen.add(row.position_code); return true;
-    }).map(row => `<option value="${escapeHtml(row.position_code)}"${row.position_code === selected ? " selected" : ""}>${escapeHtml(choiceLabel(row))}</option>`).join("");
+    return rows.filter(row => row.position_code && !seen.has(row.position_code) && seen.add(row.position_code));
+  };
+  const designationOptions = rows => [...new Set(rows.map(row => String(row.designation || "").trim()).filter(Boolean))].sort();
+  function scopeRows(picker) {
+    const designation = picker.querySelector("[data-scope-designation]")?.value || "";
+    return staffRows.filter(row => !designation || row.designation === designation);
+  }
+  function fillOptions(select, values, placeholder, selected = "") {
+    select.innerHTML = `<option value="">${escapeHtml(placeholder)}</option>` + values.map(value => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(value)}</option>`).join("");
+    select.disabled = !values.length;
+  }
+  function updateScopePicker(picker, selectedPosition = "") {
+    const desig = picker.querySelector("[data-scope-designation]");
+    const position = picker.querySelector("[data-scope-position]");
+    const search = picker.querySelector("[data-scope-position-search]")?.value.trim().toLowerCase() || "";
+    selectedPosition = selectedPosition || position?.dataset.selectedScope || "";
+    const selectedRow = selectedPosition ? positionMap().get(selectedPosition) : null;
+    if (selectedRow && desig) desig.value = selectedRow.designation || "";
+    if (desig && desig.options.length <= 1) fillOptions(desig, designationOptions(staffRows), "All designations", desig.value);
+    const rows = scopeRows(picker);
+    const positions = uniqueRows(rows).filter(row => !search || String(row.position_code).toLowerCase().includes(search)).sort((a, b) => String(a.position_code).localeCompare(String(b.position_code)));
+    if (position) {
+      position.innerHTML = `<option value="">${positions.length ? "Select position code" : "No matching positions"}</option>` + positions.map(row => `<option value="${escapeHtml(row.position_code)}"${row.position_code === selectedPosition ? " selected" : ""}>${escapeHtml(row.position_code)} · ${escapeHtml(row.employee || "Unnamed")} · ${escapeHtml(row.designation || "Staff")}</option>`).join("");
+      position.disabled = !positions.length;
+      if (selectedPosition && positions.some(row => row.position_code === selectedPosition)) position.value = selectedPosition;
+      position.dataset.selectedScope = position.value || "";
+    }
+    renderScopePreview(position, picker.dataset.previewTarget || "newUserScopePreview");
+  }
+  function scopePickerMarkup(userId = "", selected = "") {
+    const suffix = userId ? `-${userId}` : "";
+    return `<div class="scope-picker scope-picker-compact" data-scope-picker="${escapeHtml(userId)}" data-preview-target="scopePreview${suffix}">
+      <div class="scope-filter-row"><label>Designation<select data-scope-designation><option value="">All designations</option></select></label><label>Position code<input type="search" data-scope-position-search placeholder="Search position code…" autocomplete="off"><select data-scope-position data-selected-scope="${escapeHtml(selected)}"${selected ? "" : " disabled"}><option value="">Select a position code</option></select></label></div>
+    </div><small class="scope-row-preview" id="scopePreview${suffix}"></small>`;
+  }
+  // Searchable position-code dropdown used by both new-user and existing-user access controls.
+  function updateScopePicker(picker, selectedPosition = "") {
+    const desig = picker.querySelector("[data-scope-designation]");
+    const position = picker.querySelector("[data-scope-position]");
+    const searchInput = picker.querySelector("[data-scope-position-search]");
+    const menu = picker.querySelector("[data-scope-position-menu]");
+    const openMenu = picker.dataset.openPositionMenu === "true";
+    const search = searchInput?.value.trim().toLowerCase() || "";
+    selectedPosition = selectedPosition || position?.value || position?.dataset.selectedScope || "";
+    const selectedRow = selectedPosition ? positionMap().get(selectedPosition) : null;
+    if (selectedRow && desig) desig.value = selectedRow.designation || "";
+    if (desig && desig.options.length <= 1) fillOptions(desig, designationOptions(staffRows), "All designations", desig.value);
+    const designation = desig?.value || "";
+    const positions = uniqueRows(staffRows).filter(row => (!designation || row.designation === designation) && (!search || String(row.position_code).toLowerCase().includes(search))).sort((a, b) => String(a.position_code).localeCompare(String(b.position_code)));
+    if (position) {
+      position.disabled = !positions.length;
+      if (selectedPosition && positions.some(row => row.position_code === selectedPosition)) position.value = selectedPosition;
+      position.dataset.selectedScope = position.value || "";
+    }
+    if (menu) {
+      menu.innerHTML = positions.length ? positions.map(row => `<button type="button" class="scope-position-option${row.position_code === selectedPosition ? " is-selected" : ""}" data-position-value="${escapeHtml(row.position_code)}"><b>${escapeHtml(row.position_code)}</b><span>${escapeHtml(row.employee || "Unnamed")} · ${escapeHtml(row.designation || "Staff")}</span></button>`).join("") : `<div class="scope-position-empty">No matching position codes</div>`;
+      menu.hidden = !openMenu || !positions.length;
+    }
+    renderScopePreview(position, picker.dataset.previewTarget || "newUserScopePreview");
+  }
+  function scopePickerMarkup(userId = "", selected = "") {
+    const suffix = userId ? `-${userId}` : "";
+    return `<div class="scope-picker scope-picker-compact" data-scope-picker="${escapeHtml(userId)}" data-preview-target="scopePreview${suffix}">
+      <div class="scope-filter-row"><label>Designation<select data-scope-designation><option value="">All designations</option></select></label><label>Position code<div class="scope-search-box"><input type="search" data-scope-position-search placeholder="Search position code…" autocomplete="off"><input type="hidden" data-scope-position data-selected-scope="${escapeHtml(selected)}" value="${escapeHtml(selected)}"><div class="scope-position-menu" data-scope-position-menu hidden></div></div></label></div>
+    </div><small class="scope-row-preview" id="scopePreview${suffix}"></small>`;
   }
   function renderScopePreview(select, target) {
     const position = select?.value, box = $(target);
@@ -43,15 +104,15 @@
     const row = positionMap().get(position), tree = descendants(position);
     box.hidden = !row;
     if (!row) { box.innerHTML = ""; return; }
-    const asm = tree.filter(person => String(person.designation || "").trim().toUpperCase() === "ASM");
-    box.innerHTML = `<b>${escapeHtml(choiceLabel(row))}</b><span>Dashboard visibility: ${tree.length} staff position(s), including this position.</span><details><summary>View reporting hierarchy (${asm.length} ASM)</summary><span>${tree.map(person => `${person.designation || "Staff"}: ${person.employee || "Unnamed"} (${person.position_code})`).map(escapeHtml).join(" · ")}</span></details>`;
+    const children = tree.filter(person => person.position_code !== position && ["ASM", "MIO", "SPO"].includes(String(person.designation || "").trim().toUpperCase()));
+    const asm = children.filter(person => String(person.designation || "").trim().toUpperCase() === "ASM");
+    box.innerHTML = `<b>${escapeHtml(choiceLabel(row))}</b><span>Dashboard visibility: ${tree.length} staff position(s), including this position.</span><details><summary>View ASM / MIO / SPO below this position (${children.length})</summary><span>${children.length ? children.map(person => `${person.designation || "Staff"}: ${person.employee || "Unnamed"} (${person.position_code})`).map(escapeHtml).join(" · ") : "No ASM, MIO or SPO reports found below this position."}</span></details>`;
   }
 
   async function loadStaff() {
     const { staff } = await request("/api/admin/staff");
     staffRows = staff;
-    const select = $("newUserScope");
-    if (select) select.innerHTML = optionMarkup();
+    document.querySelectorAll("[data-scope-picker]").forEach(picker => updateScopePicker(picker));
   }
 
   async function loadUsers() {
@@ -61,11 +122,12 @@
       body.innerHTML = users.map(user => `<tr>
         <td>${escapeHtml(user.full_name)}</td><td>${escapeHtml(user.username)}</td>
         <td>${escapeHtml(user.role)}</td>
-        <td>${user.role === "admin" ? "All dashboard data" : `<select class="user-scope-select" data-scope-user="${user.id}">${optionMarkup(user.scope_position_code || "")}</select><small class="scope-row-preview" data-scope-preview="${user.id}"></small><button class="row-action scope-save" type="button" data-save-scope="${user.id}">Save access</button>`}</td>
+        <td>${user.role === "admin" ? "All dashboard data" : `${scopePickerMarkup(user.id, user.scope_position_code || "")}<button class="row-action scope-save" type="button" data-save-scope="${user.id}">Save access</button>`}</td>
         <td class="${user.is_active ? "status-active" : "status-inactive"}">${user.is_active ? "Active" : "Inactive"}</td>
         <td>${escapeHtml(formatDate(user.last_login_at))}</td>
         <td><button class="row-action" data-user-id="${user.id}" data-active="${user.is_active}">${user.is_active ? "Deactivate" : "Activate"}</button></td>
       </tr>`).join("") || `<tr><td colspan="7">No users found.</td></tr>`;
+      body.querySelectorAll("[data-scope-picker]").forEach(picker => updateScopePicker(picker));
     } catch (error) { body.innerHTML = `<tr><td colspan="7">${escapeHtml(error.message)}</td></tr>`; }
   }
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>'"]/g, char => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[char])); }
@@ -76,13 +138,16 @@
       const values = formData(event.target);
       if (values.role === "admin") values.scope_position_code = null;
       await request("/api/admin/users", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
-      event.target.reset(); message("User created successfully."); await loadUsers();
+      event.target.reset(); const search = $("newUserScopePicker")?.querySelector("[data-scope-position-search]"); if (search) search.value = ""; updateScopePicker($("newUserScopePicker")); message("User created successfully."); await loadUsers();
     } catch (error) { message(error.message, true); }
   });
   $("userForm select[name=role]")?.addEventListener("change", event => {
-    const scope = $("newUserScope"), required = event.target.value !== "admin";
-    scope.required = required; scope.disabled = !required;
-    if (!required) { scope.value = ""; renderScopePreview(scope, "newUserScopePreview"); }
+    const picker = $("newUserScopePicker"), required = event.target.value !== "admin";
+    const scope = picker?.querySelector("[data-scope-position]");
+    picker?.querySelectorAll("select, input").forEach(control => { control.disabled = !required; });
+    if (scope) { scope.required = required; if (!required) scope.value = ""; }
+    if (required) updateScopePicker(picker);
+    picker?.classList.toggle("is-disabled", !required);
   });
   $("importForm")?.addEventListener("submit", async event => {
     event.preventDefault(); message("");
@@ -95,17 +160,39 @@
     } catch (error) { message(error.message, true); }
   });
   $("refreshUsers")?.addEventListener("click", loadUsers);
-  $("usersBody")?.addEventListener("change", event => {
-    const select = event.target.closest("[data-scope-user]"); if (!select) return;
-    const row = positionMap().get(select.value), tree = descendants(select.value);
-    const preview = document.querySelector(`[data-scope-preview="${select.dataset.scopeUser}"]`);
-    if (!preview) return;
-    const asm = tree.filter(person => String(person.designation || "").trim().toUpperCase() === "ASM");
-    preview.textContent = row ? `Includes ${tree.length} positions (${asm.length} ASM): ${asm.map(person => `${person.employee} [${person.position_code}]`).join(", ") || "No ASM reporting below this position"}` : "Choose a position";
+  document.addEventListener("change", event => {
+    const picker = event.target.closest("[data-scope-picker]"); if (!picker) return;
+    if (event.target.matches("[data-scope-designation]")) updateScopePicker(picker);
+    if (event.target.matches("[data-scope-position]")) renderScopePreview(event.target, picker.dataset.previewTarget || "newUserScopePreview");
+  });
+  document.addEventListener("input", event => {
+    const picker = event.target.closest("[data-scope-picker]");
+    if (picker && event.target.matches("[data-scope-position-search]")) { picker.dataset.openPositionMenu = "true"; updateScopePicker(picker); }
+  });
+  document.addEventListener("focusin", event => {
+    const picker = event.target.closest("[data-scope-picker]");
+    if (picker && event.target.matches("[data-scope-position-search]")) { picker.dataset.openPositionMenu = "true"; updateScopePicker(picker); }
+  });
+  document.addEventListener("click", event => {
+    const option = event.target.closest("[data-position-value]");
+    if (option) {
+      const picker = option.closest("[data-scope-picker]");
+      const position = picker?.querySelector("[data-scope-position]");
+      const search = picker?.querySelector("[data-scope-position-search]");
+      if (position) { position.value = option.dataset.positionValue; position.dataset.selectedScope = position.value; }
+      if (search) search.value = option.dataset.positionValue;
+      const menu = picker?.querySelector("[data-scope-position-menu]");
+      if (menu) menu.hidden = true;
+      if (picker) picker.dataset.openPositionMenu = "false";
+      renderScopePreview(position, picker?.dataset.previewTarget || "newUserScopePreview");
+      return;
+    }
+    if (!event.target.closest(".scope-search-box")) document.querySelectorAll("[data-scope-picker]").forEach(picker => { picker.dataset.openPositionMenu = "false"; const menu = picker.querySelector("[data-scope-position-menu]"); if (menu) menu.hidden = true; });
   });
   $("usersBody")?.addEventListener("click", async event => {
     const button = event.target.closest("[data-save-scope]"); if (!button) return;
-    const select = document.querySelector(`[data-scope-user="${button.dataset.saveScope}"]`);
+    const picker = document.querySelector(`[data-scope-picker="${button.dataset.saveScope}"]`);
+    const select = picker?.querySelector("[data-scope-position]");
     if (!select?.value) { message("Choose a hierarchy position before saving access.", true); return; }
     button.disabled = true;
     try {
@@ -113,7 +200,6 @@
       message("Hierarchy access updated. The user’s next dashboard request will use this scope."); await loadUsers();
     } catch (error) { message(error.message, true); button.disabled = false; }
   });
-  $("newUserScope")?.addEventListener("change", event => renderScopePreview(event.target, "newUserScopePreview"));
   $("usersBody")?.addEventListener("click", async event => {
     const button = event.target.closest("[data-user-id]"); if (!button) return;
     button.disabled = true;
