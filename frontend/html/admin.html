@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Administration | Executive Dashboard</title>
-  <link rel="stylesheet" href="/css/admin.css?v=20261021-1" />
+  <link rel="stylesheet" href="/css/admin.css?v=20261021-4" />
 </head>
 <body class="admin-page">
   <header class="admin-topbar">
@@ -24,7 +24,17 @@
           <label>Full name<input name="full_name" required minlength="2" /></label>
           <label>Username<input name="username" required minlength="3" autocomplete="off" /></label>
           <label>Password<input name="password" type="password" required minlength="8" autocomplete="new-password" /></label>
-          <label>Role<select name="role"><option value="viewer">Viewer</option><option value="executive">Executive</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label>
+          <label>Role<select name="role">
+            <option value="viewer">Viewer</option>
+            <option value="executive">Executive</option>
+            <option value="manager">Manager</option>
+            <optgroup label="Hierarchy roles">
+              <option value="HOD">HOD</option><option value="DGM">DGM</option><option value="RSM">RSM</option><option value="ASM">ASM</option>
+              <option value="SPO">SPO</option><option value="MIO">MIO</option><option value="IO">IO</option><option value="PS">PS</option><option value="SB">SB</option>
+              <option value="ASMTE">ASMTE</option><option value="CM">CM</option><option value="SPOWS">SPOWS</option><option value="TE">TE</option><option value="EXEC">EXEC</option>
+            </optgroup>
+            <option value="admin">Admin</option>
+          </select></label>
           <div class="wide scope-picker" id="newUserScopePicker" data-scope-picker="newUserScope">
             <strong>Hierarchy access</strong>
             <div class="scope-filter-row">
@@ -49,6 +59,6 @@
     <section class="admin-card users-card"><div class="card-heading"><div><h2>Dashboard users</h2><p>Each position assignment grants access to that position and everyone reporting beneath it.</p></div><button id="refreshUsers" class="secondary-button" type="button">Refresh</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Hierarchy access</th><th>Status</th><th>Last login</th><th>Action</th></tr></thead><tbody id="usersBody"><tr><td colspan="7">Loading users...</td></tr></tbody></table></div></section>
   </main>
   <script src="/js/auth.js?v=20261021-3"></script>
-  <script src="/js/admin.js?v=20261021-3"></script>
+  <script src="/js/admin.js?v=20261021-6"></script>
 </body>
 </html>

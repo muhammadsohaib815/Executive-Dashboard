@@ -57,10 +57,10 @@
     const headerControls = document.querySelector(".header-controls");
     if (headerControls) {
       button.classList.add("header-filter-toggle");
-      button.innerHTML = icon("filter");
-      headerControls.insertBefore(button, $("userMenu") || $("logoutButton") || null);
+      button.innerHTML = "Filter";
+      headerControls.insertBefore(button, $("teamToggle") || $("resetDashboard") || $("userMenu") || $("logoutButton") || null);
     } else {
-      button.innerHTML = `${icon("filter")}<span>Filters</span><b class="filter-count">0</b><span class="filter-chevron">⌄</span>`;
+      button.innerHTML = `<span>Filter</span><b class="filter-count">0</b><span class="filter-chevron">⌄</span>`;
       wrap.append(button);
     }
     filters.parentNode.removeChild(filters);
@@ -70,6 +70,18 @@
       const open = wrap.classList.toggle("open");
       button.setAttribute("aria-expanded", String(open));
       button.setAttribute("aria-label", open ? "Close filters" : "Open filters");
+    });
+    const hideControls = $("toggleHeaderOptions");
+    hideControls?.addEventListener("click", () => {
+      const hidden = headerControls?.classList.toggle("options-hidden") || false;
+      if (hidden) {
+        wrap.classList.remove("open");
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("aria-label", "Open filters");
+      }
+      hideControls.setAttribute("aria-expanded", String(!hidden));
+      hideControls.setAttribute("title", hidden ? "Show dashboard controls" : "Hide dashboard controls");
+      hideControls.textContent = hidden ? "Show" : "Hide";
     });
     const searchToggle = $("fNameSearchToggle");
     const searchInput = $("fNameSearch");

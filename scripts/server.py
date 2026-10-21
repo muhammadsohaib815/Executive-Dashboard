@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import threading
 import time
@@ -69,7 +70,25 @@ ENV = load_env(ROOT / ".env")
 
 LOGGER = logging.getLogger("executive_dashboard.auth")
 AUTH_COOKIE_NAME = "dashboard_session"
+# Login roles are kept separate from the assigned staff position, but the
+# administrator may use the same hierarchy labels for clearer account
+# management and reporting (ASM, RSM, SPO, MIO/IO, etc.).
 AUTH_ROLES = {"admin", "executive", "manager", "viewer"}
+DESIGNATION_ROLES = {
+    "ASM", "RSM", "DGM", "SPO", "MIO", "IO", "HOD", "EXEC",
+    "PS", "SB", "ASMTE", "CM", "SPOWS", "TE",
+}
+AUTH_ROLE_VALUES = AUTH_ROLES | DESIGNATION_ROLES
+
+
+def normalize_auth_role(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.lower() in AUTH_ROLES:
+        return raw.lower()
+    upper = raw.upper()
+    if upper in DESIGNATION_ROLES:
+        return upper
+    return raw.lower()
 AUTH_SESSION_TTL_SECONDS = 28800
 AUTH_SECRET = ENV.get("AUTH_SECRET") or secrets.token_hex(32)
 AUTH_COOKIE_SECURE = ENV.get("AUTH_COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -276,8 +295,12 @@ def current_user(request: Request):
         raise HTTPException(401, "Authentication required")
     rows = query(
         """SELECT id, username, full_name, role, is_active, created_at, last_login_at,
-                  scope_position_code
-           FROM public.dashboard_users WHERE id = %s LIMIT 1""",
+                  scope_position_code,
+                  (SELECT NULLIF(TRIM(s.designation_name), '')
+                     FROM public.staff_master s
+                    WHERE TRIM(s.position_code) = TRIM(u.scope_position_code)
+                    ORDER BY s.position_code LIMIT 1) AS designation_name
+           FROM public.dashboard_users u WHERE id = %s LIMIT 1""",
         [session.get("uid")], "auth.current_user",
     )
     if not rows or not rows[0][4]:
@@ -287,7 +310,7 @@ def current_user(request: Request):
         "id": row[0], "username": row[1], "full_name": row[2], "role": row[3],
         "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
         "last_login_at": row[6].isoformat() if row[6] else None,
-        "scope_position_code": row[7],
+        "scope_position_code": row[7], "designation": row[8],
     }
 
 
@@ -311,13 +334,13 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     full_name: str = Field(min_length=2, max_length=120)
     password: str = Field(min_length=8, max_length=256)
-    role: str = Field(default="viewer", min_length=4, max_length=20)
+    role: str = Field(default="viewer", min_length=2, max_length=20)
     scope_position_code: str | None = Field(default=None, max_length=120)
 
 
 class UserUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=2, max_length=120)
-    role: str | None = Field(default=None, min_length=4, max_length=20)
+    role: str | None = Field(default=None, min_length=2, max_length=20)
     password: str | None = Field(default=None, min_length=8, max_length=256)
     is_active: bool | None = None
     scope_position_code: str | None = Field(default=None, max_length=120)
@@ -330,6 +353,20 @@ class ActionPlanRequest(BaseModel):
     priority: str = Field(default="Medium", max_length=20)
     status: str = Field(default="Open", max_length=30)
     recipient_user_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class ActionPlanResponseRequest(BaseModel):
+    response_text: str = Field(min_length=1, max_length=2000)
+
+
+class ProfileUpdateRequest(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    profile_photo_data: str | None = Field(default=None, max_length=1_500_000)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
 
 
 class NotificationReadRequest(BaseModel):
@@ -734,6 +771,28 @@ def validate_scope_position(scope_position_code, role):
     return rows[0][0]
 
 
+def scope_position_role(scope_position_code):
+    """Return the immutable dashboard role represented by a staff position."""
+    code = (scope_position_code or "").strip()
+    if not code:
+        raise HTTPException(400, "Select a staff position to assign this user's hierarchy access")
+    rows = query(
+        """SELECT UPPER(TRIM(designation_name))
+             FROM public.staff_master
+            WHERE TRIM(position_code) = %s
+              AND NULLIF(TRIM(designation_name), '') IS NOT NULL
+            ORDER BY position_code
+            LIMIT 1""",
+        [code], "auth.scope_position_role",
+    )
+    if not rows:
+        raise HTTPException(400, "The selected staff position does not have a staff designation")
+    designation = str(rows[0][0] or "").strip().upper()
+    if designation not in DESIGNATION_ROLES:
+        raise HTTPException(400, f"The selected staff position has unsupported designation '{designation}'")
+    return designation
+
+
 @app.get("/api/auth/status")
 def auth_status(request: Request):
     rows = query("SELECT COUNT(*) FROM public.dashboard_users", [], "auth.user_count")
@@ -809,6 +868,83 @@ def auth_me(request: Request):
     return {"user": current_user(request)}
 
 
+def profile_record(user_id: int):
+    rows = query(
+        """SELECT u.id, u.username, u.full_name, u.role, u.is_active,
+                  u.created_at, u.last_login_at, u.scope_position_code,
+                  u.profile_photo_data,
+                  TRIM(s.designation_name), TRIM(s.employee_name),
+                  TRIM(s.team_name), TRIM(s.dept_territory_code),
+                  TRIM(s.region_name), TRIM(s.zone_name), TRIM(s.sub_zone)
+             FROM public.dashboard_users u
+             LEFT JOIN LATERAL (
+               SELECT designation_name, employee_name, team_name,
+                      dept_territory_code, region_name, zone_name, sub_zone
+                 FROM public.staff_master
+                WHERE TRIM(position_code) = TRIM(u.scope_position_code)
+                ORDER BY position_code
+                LIMIT 1
+             ) s ON TRUE
+            WHERE u.id = %s
+            LIMIT 1""",
+        [user_id], "auth.profile",
+    )
+    if not rows:
+        raise HTTPException(404, "Profile not found")
+    row = rows[0]
+    return {
+        "id": row[0], "username": row[1], "full_name": row[2], "role": row[3],
+        "is_active": row[4], "created_at": row[5].isoformat() if row[5] else None,
+        "last_login_at": row[6].isoformat() if row[6] else None,
+        "scope_position_code": row[7], "profile_photo_data": row[8],
+        "designation": row[9], "employee_name": row[10], "team": row[11],
+        "territory": row[12], "region": row[13], "zone": row[14], "subzone": row[15],
+    }
+
+
+@app.get("/api/profile")
+def get_profile(request: Request):
+    return {"profile": profile_record(current_user(request)["id"])}
+
+
+@app.patch("/api/profile")
+def update_profile(payload: ProfileUpdateRequest, request: Request):
+    user = current_user(request)
+    full_name = payload.full_name.strip()
+    if not full_name:
+        raise HTTPException(400, "Full name is required")
+    fields = ["full_name = %s", "updated_at = NOW()"]
+    values = [full_name]
+    fields_set = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
+    if "profile_photo_data" in fields_set:
+        photo = payload.profile_photo_data
+        if photo and not re.fullmatch(r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+", photo):
+            raise HTTPException(400, "Profile photo must be a PNG, JPEG, or WebP image")
+        fields.append("profile_photo_data = %s")
+        values.append(photo)
+    values.append(user["id"])
+    execute_transaction(
+        "UPDATE public.dashboard_users SET " + ", ".join(fields) + " WHERE id = %s",
+        values, "auth.profile_update",
+    )
+    return {"profile": profile_record(user["id"])}
+
+
+@app.post("/api/profile/password")
+def change_profile_password(payload: PasswordChangeRequest, request: Request):
+    user = current_user(request)
+    rows = query("SELECT password_hash FROM public.dashboard_users WHERE id = %s", [user["id"]], "auth.profile_password")
+    if not rows or not verify_password(payload.current_password, rows[0][0]):
+        raise HTTPException(400, "Current password is incorrect")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(400, "New password must be different")
+    execute_transaction(
+        "UPDATE public.dashboard_users SET password_hash = %s, updated_at = NOW() WHERE id = %s",
+        [hash_password(payload.new_password), user["id"]], "auth.profile_password_update",
+    )
+    return {"ok": True, "message": "Password changed successfully"}
+
+
 @app.get("/api/admin/users")
 def admin_users(request: Request):
     require_admin(request)
@@ -844,12 +980,16 @@ def admin_create_user(payload: UserCreateRequest, request: Request):
     require_admin(request)
     username = payload.username.strip().lower()
     full_name = payload.full_name.strip()
-    role = payload.role.strip().lower()
-    if role not in AUTH_ROLES:
-        raise HTTPException(400, "role must be admin, executive, manager, or viewer")
+    role = normalize_auth_role(payload.role)
+    if role not in AUTH_ROLE_VALUES:
+        raise HTTPException(400, "role must be admin, executive, manager, viewer, or a staff designation such as ASM, RSM, DGM, SPO, or MIO")
     if not username or not full_name:
         raise HTTPException(400, "Username and full name are required")
     scope_position_code = validate_scope_position(payload.scope_position_code, role)
+    if role != "admin":
+        # A scoped account's role is always derived from its assigned staff
+        # position. The submitted role is only a UI hint for new accounts.
+        role = scope_position_role(scope_position_code)
     try:
         rows = execute_transaction(
             """INSERT INTO public.dashboard_users
@@ -870,19 +1010,34 @@ def admin_update_user(user_id: int, payload: UserUpdateRequest, request: Request
     admin = require_admin(request)
     if admin["id"] == user_id and payload.is_active is False:
         raise HTTPException(400, "You cannot deactivate your own administrator account")
+    existing_rows = query(
+        "SELECT role, scope_position_code FROM public.dashboard_users WHERE id = %s",
+        [user_id], "auth.admin_user_existing",
+    )
+    if not existing_rows:
+        raise HTTPException(404, "User not found")
+    existing_role, existing_scope = existing_rows[0]
+    fields_set = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
     fields, values = [], []
     if payload.full_name is not None:
         fields.append("full_name = %s"); values.append(payload.full_name.strip())
-    if payload.role is not None:
-        role = payload.role.strip().lower()
-        if role not in AUTH_ROLES:
-            raise HTTPException(400, "role must be admin, executive, manager, or viewer")
+    if "scope_position_code" in fields_set or "role" in fields_set:
+        requested_scope = payload.scope_position_code if "scope_position_code" in fields_set else existing_scope
+        requested_role = normalize_auth_role(payload.role) if "role" in fields_set else existing_role
+        if requested_role not in AUTH_ROLE_VALUES:
+            raise HTTPException(400, "role must be admin, executive, manager, viewer, or a staff designation such as ASM, RSM, DGM, SPO, or MIO")
+        if requested_role == "admin":
+            if requested_scope:
+                raise HTTPException(400, "Administrator accounts cannot be assigned a staff position")
+            scope_position_code = None
+            role = "admin"
+        else:
+            scope_position_code = validate_scope_position(requested_scope, requested_role)
+            derived_role = scope_position_role(scope_position_code)
+            if "role" in fields_set and requested_role != derived_role:
+                raise HTTPException(400, f"Role is fixed by the assigned position ({derived_role})")
+            role = derived_role
         fields.append("role = %s"); values.append(role)
-    else:
-        role_rows = query("SELECT role FROM public.dashboard_users WHERE id = %s", [user_id], "auth.admin_user_role")
-        role = role_rows[0][0] if role_rows else None
-    if payload.scope_position_code is not None or payload.role is not None:
-        scope_position_code = validate_scope_position(payload.scope_position_code, role)
         fields.append("scope_position_code = %s"); values.append(scope_position_code)
     if payload.password is not None:
         fields.append("password_hash = %s"); values.append(hash_password(payload.password))
@@ -897,8 +1052,6 @@ def admin_update_user(user_id: int, payload: UserUpdateRequest, request: Request
         " WHERE id = %s RETURNING id, username, full_name, role, is_active, created_at, updated_at, last_login_at, scope_position_code",
         values, "auth.admin_update_user",
     )
-    if not rows:
-        raise HTTPException(404, "User not found")
     return {"user": public_user(rows[0])}
 
 
@@ -948,26 +1101,70 @@ def admin_data_import(payload: DataImportRequest, request: Request):
     return {"table": table, "rows_inserted": len(values), "columns": ordered_columns}
 
 
+ACTION_PLAN_FIELD_RECIPIENTS = ("SPO", "MIO")
+ACTION_PLAN_MANAGER_RECIPIENTS = ("ASM", "RSM", "DGM", "HOD", "EXEC")
+
+
+def action_plan_recipient_scope(user):
+    """Return recipient position codes and allowed designations for the sender."""
+    if user["role"] == "admin":
+        return None, ACTION_PLAN_FIELD_RECIPIENTS, "SPO/MIO"
+    designation = str(user.get("designation") or "").strip().upper()
+    if designation in ACTION_PLAN_FIELD_RECIPIENTS:
+        # A field employee reports upward. Prefer the immediate ASM, while
+        # retaining a manager fallback for branches without an ASM account.
+        rows = query(
+            """SELECT parent.position_code, UPPER(TRIM(parent.designation_name))
+                 FROM staff_master child
+                 JOIN staff_master parent
+                   ON TRIM(parent.position_code) = TRIM(child.report_to_position_code)
+                WHERE TRIM(child.position_code) = %s
+                  AND UPPER(TRIM(parent.designation_name)) = ANY(%s)
+                GROUP BY parent.position_code, parent.designation_name
+                ORDER BY CASE UPPER(TRIM(parent.designation_name))
+                           WHEN 'ASM' THEN 1 WHEN 'RSM' THEN 2 WHEN 'DGM' THEN 3
+                           WHEN 'HOD' THEN 4 WHEN 'EXEC' THEN 5 ELSE 9 END,
+                         parent.position_code""",
+            [user.get("scope_position_code"), list(ACTION_PLAN_MANAGER_RECIPIENTS)],
+            "actions.reporting_manager_positions",
+        )
+        return [row[0] for row in rows], ACTION_PLAN_MANAGER_RECIPIENTS, "reporting manager"
+    return request_scope_positions(), ACTION_PLAN_FIELD_RECIPIENTS, "SPO/MIO"
+
+
 @app.get("/api/action-plan-recipients")
 def action_plan_recipients(request: Request):
     user = current_user(request)
-    positions = request_scope_positions() if user["role"] != "admin" else None
+    positions, recipient_designations, recipient_label = action_plan_recipient_scope(user)
     if positions is None:
         rows = query(
-            """SELECT id, full_name, role, scope_position_code FROM public.dashboard_users
-               WHERE is_active = TRUE AND role <> 'admin' AND scope_position_code IS NOT NULL
-               ORDER BY full_name""", [], "actions.recipients_admin",
+            """SELECT DISTINCT ON (u.id) u.id, u.full_name, u.role, u.scope_position_code,
+                      TRIM(s.designation_name), TRIM(s.employee_name)
+               FROM public.dashboard_users u
+               JOIN public.staff_master s
+                 ON TRIM(s.position_code) = TRIM(u.scope_position_code)
+               WHERE u.is_active = TRUE AND u.role <> 'admin'
+                 AND u.scope_position_code IS NOT NULL
+                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)
+               ORDER BY u.id, u.full_name""", [list(recipient_designations)], "actions.recipients_admin",
         )
     else:
         rows = query(
-            """SELECT id, full_name, role, scope_position_code FROM public.dashboard_users
-               WHERE is_active = TRUE AND role <> 'admin' AND scope_position_code = ANY(%s)
-               ORDER BY full_name""", [positions], "actions.recipients_scoped",
+            """SELECT DISTINCT ON (u.id) u.id, u.full_name, u.role, u.scope_position_code,
+                      TRIM(s.designation_name), TRIM(s.employee_name)
+               FROM public.dashboard_users u
+               JOIN public.staff_master s
+                 ON TRIM(s.position_code) = TRIM(u.scope_position_code)
+               WHERE u.is_active = TRUE AND u.role <> 'admin'
+                 AND u.scope_position_code = ANY(%s)
+                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)
+               ORDER BY u.id, u.full_name""", [positions, list(recipient_designations)], "actions.recipients_scoped",
         )
     return {"recipients": [
-        {"id": row[0], "full_name": row[1], "role": row[2], "position_code": row[3]}
+        {"id": row[0], "full_name": row[1], "role": row[2], "position_code": row[3],
+         "designation": row[4], "employee_name": row[5]}
         for row in rows
-    ]}
+    ], "recipient_label": recipient_label}
 
 
 @app.post("/api/action-plans")
@@ -982,18 +1179,24 @@ def create_action_plan(payload: ActionPlanRequest, request: Request):
     recipient_ids = list(dict.fromkeys(payload.recipient_user_ids))
     if not recipient_ids:
         raise HTTPException(400, "Select at least one recipient")
-    positions = request_scope_positions() if user["role"] != "admin" else None
+    positions, recipient_designations, _recipient_label = action_plan_recipient_scope(user)
     if positions is None:
         allowed = query(
-            """SELECT id FROM public.dashboard_users WHERE id = ANY(%s)
-               AND is_active = TRUE AND role <> 'admin' AND scope_position_code IS NOT NULL""",
-            [recipient_ids], "actions.validate_recipients_admin",
+            """SELECT DISTINCT u.id FROM public.dashboard_users u
+               JOIN public.staff_master s ON TRIM(s.position_code) = TRIM(u.scope_position_code)
+               WHERE u.id = ANY(%s) AND u.is_active = TRUE AND u.role <> 'admin'
+                 AND u.scope_position_code IS NOT NULL
+                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)""",
+            [recipient_ids, list(recipient_designations)], "actions.validate_recipients_admin",
         )
     else:
         allowed = query(
-            """SELECT id FROM public.dashboard_users WHERE id = ANY(%s)
-               AND is_active = TRUE AND role <> 'admin' AND scope_position_code = ANY(%s)""",
-            [recipient_ids, positions], "actions.validate_recipients_scoped",
+            """SELECT DISTINCT u.id FROM public.dashboard_users u
+               JOIN public.staff_master s ON TRIM(s.position_code) = TRIM(u.scope_position_code)
+               WHERE u.id = ANY(%s) AND u.is_active = TRUE AND u.role <> 'admin'
+                 AND u.scope_position_code = ANY(%s)
+                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)""",
+            [recipient_ids, positions, list(recipient_designations)], "actions.validate_recipients_scoped",
         )
     allowed_ids = {row[0] for row in allowed}
     if allowed_ids != set(recipient_ids):
@@ -1019,10 +1222,20 @@ def get_notifications(request: Request):
     user = current_user(request)
     rows = query(
         """SELECT n.id, n.read_at, n.created_at, p.id, p.action_text, p.action_owner,
-                  p.due_date, p.priority, p.status, creator.full_name
+                  p.due_date, p.priority, p.status, creator.full_name,
+                  latest.response_text, latest.responder_name, latest.response_created_at
            FROM public.dashboard_notifications n
            JOIN public.dashboard_action_plans p ON p.id = n.action_plan_id
            JOIN public.dashboard_users creator ON creator.id = p.created_by_user_id
+           LEFT JOIN LATERAL (
+             SELECT r.response_text, responder.full_name AS responder_name,
+                    r.created_at AS response_created_at
+               FROM public.dashboard_action_plan_responses r
+               JOIN public.dashboard_users responder ON responder.id = r.sender_user_id
+              WHERE r.action_plan_id = p.id
+              ORDER BY r.created_at DESC, r.id DESC
+              LIMIT 1
+           ) latest ON TRUE
            WHERE n.recipient_user_id = %s
            ORDER BY n.created_at DESC, n.id DESC LIMIT 50""",
         [user["id"]], "notifications.inbox",
@@ -1032,9 +1245,54 @@ def get_notifications(request: Request):
          "created_at": row[2].isoformat() if row[2] else None, "action_plan_id": row[3],
          "action_text": row[4], "action_owner": row[5],
          "due_date": row[6].isoformat() if row[6] else None, "priority": row[7],
-         "status": row[8], "sender": row[9]}
+         "status": row[8], "sender": row[9],
+         "latest_response": ({"text": row[10], "sender": row[11],
+                              "created_at": row[12].isoformat() if row[12] else None}
+                             if row[10] else None)}
         for row in rows
     ]}
+
+
+@app.post("/api/action-plans/{action_plan_id}/responses")
+def respond_to_action_plan(action_plan_id: int, payload: ActionPlanResponseRequest, request: Request):
+    """Let a field employee acknowledge an assigned action and notify its owner."""
+    user = current_user(request)
+    designation = str(user.get("designation") or "").strip().upper()
+    if designation not in {"SPO", "MIO"}:
+        raise HTTPException(403, "Only SPO/MIO users can send action-plan responses")
+    response_text = payload.response_text.strip()
+    if not response_text:
+        raise HTTPException(400, "Response message is required")
+    assigned = query(
+        """SELECT p.created_by_user_id
+             FROM public.dashboard_action_plans p
+             JOIN public.dashboard_action_plan_recipients r ON r.action_plan_id = p.id
+            WHERE p.id = %s AND r.recipient_user_id = %s
+            LIMIT 1""",
+        [action_plan_id, user["id"]], "actions.response_authorization",
+    )
+    if not assigned:
+        raise HTTPException(403, "This action plan is not assigned to your account")
+    rows = execute_transaction(
+        """WITH new_response AS (
+               INSERT INTO public.dashboard_action_plan_responses
+                    (action_plan_id, sender_user_id, response_text)
+               VALUES (%s, %s, %s)
+               RETURNING id
+             ), notify_owner AS (
+               INSERT INTO public.dashboard_notifications (recipient_user_id, action_plan_id)
+               SELECT p.created_by_user_id, p.id
+                 FROM public.dashboard_action_plans p
+                WHERE p.id = %s
+               ON CONFLICT (recipient_user_id, action_plan_id)
+               DO UPDATE SET read_at = NULL, created_at = NOW()
+               RETURNING action_plan_id
+             )
+             SELECT new_response.id FROM new_response CROSS JOIN notify_owner""",
+        [action_plan_id, user["id"], response_text, action_plan_id],
+        "actions.respond_to_plan",
+    )
+    return {"ok": True, "response_id": rows[0][0]}
 
 
 @app.patch("/api/notifications/{notification_id}")
@@ -1292,7 +1550,17 @@ def _kpis_uncached(
     sfx = f"{d.strftime('%b').lower()}_{d.strftime('%y')}"           # jul_26
     # Call-source extracts use `Jul-26`; retain `Jul,26` compatibility for
     # older imports while the source files are standardized.
-    call_months = [f"{d.strftime('%b')}-{d.strftime('%y')}", f"{d.strftime('%b')},{d.strftime('%y')}"]
+    month_abbr = d.strftime('%b')
+    month_aliases = [month_abbr]
+    # Some imported Pharma files use "Sept" while the dashboard formatter
+    # uses the standard three-letter "Sep" abbreviation.
+    if month_abbr == "Sep":
+        month_aliases.append("Sept")
+    call_months = [
+        token
+        for alias in month_aliases
+        for token in (f"{alias}-{d.strftime('%y')}", f"{alias},{d.strftime('%y')}")
+    ]
     scope_positions = (resolve_authorized_positions(
         designation, region, zone, subzone, territory, employee, team,
     ) if resolved_positions is None else list(resolved_positions))
@@ -2399,6 +2667,27 @@ def ai_insights(
     team = team.upper()
     if team not in {"COMBINED", "FMCG", "PHARMA"}:
         raise HTTPException(400, "invalid team")
+    # A scoped account may not use the national ALL lens through a crafted
+    # request.  Pick the most useful accessible level for that account (field
+    # users see themselves; managers see their direct reporting level).  The
+    # selected designation is still checked below and the hierarchy CTE keeps
+    # every result inside the assigned reporting tree.
+    if REQUEST_SCOPE_POSITION.get() and designation in {"ALL", "All"}:
+        available = [str(value).upper() for value in designation_options(team) if str(value).upper() != "ALL"]
+        own_rows = query(
+            "SELECT DISTINCT UPPER(TRIM(designation_name)) FROM staff_master WHERE position_code = %s LIMIT 1",
+            [REQUEST_SCOPE_POSITION.get()], "ai.scope_designation",
+        )
+        own = own_rows[0][0] if own_rows and own_rows[0][0] else ""
+        preferred = {
+            "EXEC": ("RSM", "ASM", "SPO", "MIO"), "HOD": ("RSM", "ASM", "SPO", "MIO"),
+            "DGM": ("RSM", "ASM", "SPO", "MIO"), "RSM": ("ASM", "SPO", "MIO"),
+            "ASM": ("SPO", "MIO", "PS", "SB", "ASMTE", "CM", "SPOWS", "TE"),
+        }
+        designation = own if own in INDIVIDUAL and own in available else next(
+            (value for value in preferred.get(own, ()) if value in available),
+            own if own in available else (available[0] if available else "ALL"),
+        )
     try:
         date = dt.datetime.strptime(month, "%b-%Y")
     except ValueError:

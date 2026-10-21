@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261021-4" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261021-16" />
 </head>
 <body class="executive-page">
   <div class="app executive-dashboard" id="app" data-designation="HOD">
@@ -30,7 +30,7 @@
         </div>
       </div>
 
-      <div class="header-controls" aria-label="Dashboard team, period, metric, and filter controls">
+      <div class="header-controls" aria-label="Dashboard team, period, metric, month, filter, and visibility controls">
         <div class="segment-toggle team-toggle" id="teamToggle" role="group" aria-label="Team">
           <button type="button" data-team="COMBINED" aria-pressed="true">Combined</button>
           <button type="button" data-team="FMCG" aria-pressed="false">FMCG</button>
@@ -46,14 +46,20 @@
           <button type="button" data-value-metric="units" aria-pressed="false">Units</button>
           <button type="button" data-value-metric="cyp" aria-pressed="false">CYP</button>
         </div>
+        <label class="header-month" for="fMonth">
+          <span>Month</span>
+          <select id="fMonth" name="month" aria-label="Reporting month"></select>
+        </label>
+        <button id="resetDashboard" class="reset-dashboard" type="button" title="Reset dashboard filters">Reset</button>
+        <button id="toggleHeaderOptions" class="hide-controls-button" type="button" aria-expanded="true" title="Hide dashboard controls">Hide</button>
         <div class="user-menu" id="userMenu">
           <button id="userMenuButton" class="user-menu-button" type="button" aria-expanded="false" aria-controls="userMenuPanel" hidden>
-            <span data-auth-first-name>User</span><span id="notificationBadge" class="notification-badge" hidden>0</span>
+            <span data-auth-first-name>User</span>
           </button>
           <div id="userMenuPanel" class="user-menu-panel" hidden>
-            <div class="user-menu-heading"><strong data-auth-user></strong><span>Action plan notifications</span></div>
+            <div class="user-menu-heading"><strong data-auth-user></strong><span>Account options</span></div>
+            <a id="profileLink" class="admin-link" href="#profile">Profile</a>
             <a id="adminLink" class="admin-link" href="/admin" hidden>Administration</a>
-            <div id="notificationList" class="notification-list"><p class="notification-empty">Loading notifications…</p></div>
           </div>
         </div>
         <button id="logoutButton" class="logout-button" type="button" hidden>Logout</button>
@@ -120,10 +126,6 @@
             <div class="filter-picker-options" data-picker-options="territory" role="listbox"></div>
           </div>
         </label>
-        <label class="filter" for="fMonth">
-          <span>Month</span>
-          <select id="fMonth" name="month"></select>
-        </label>
         <label class="filter" for="fFY">
           <span>FY</span>
           <select id="fFY" name="fy"></select>
@@ -131,6 +133,32 @@
         <button type="button" id="applyFilters" class="apply-filters">Apply Filters</button>
       </form>
     </header>
+
+    <section id="profileModal" class="profile-modal" hidden aria-label="User profile">
+      <div class="profile-card" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+        <div class="profile-card-head"><div><span class="profile-eyebrow">ACCOUNT PROFILE</span><h2 id="profileTitle">Profile</h2></div><button id="profileClose" class="profile-close" type="button" aria-label="Close profile">×</button></div>
+        <div id="profileMessage" class="profile-message" role="status" hidden></div>
+        <div class="profile-layout">
+          <div class="profile-identity">
+            <div class="profile-avatar-wrap"><img id="profileAvatar" class="profile-avatar" src="/images/greenstar-short.jfif" alt="Profile photo"><label class="profile-photo-button">Update photo<input id="profilePhoto" type="file" accept="image/png,image/jpeg,image/webp" hidden></label></div>
+            <strong id="profileName">User</strong><span id="profileDesignation">Dashboard user</span>
+          </div>
+          <form id="profileForm" class="profile-form">
+            <h3>Personal information</h3>
+            <label>Full name<input name="full_name" required minlength="2" maxlength="120"></label>
+            <label>Username<input name="username" readonly></label>
+            <div class="profile-detail-grid"><label>Role<input name="role" readonly></label><label>Designation<input name="designation" readonly></label><label>Position code<input name="position_code" readonly></label><label>Dept Terr Code<input name="territory" readonly></label><label>Region<input name="region" readonly></label><label>Zone<input name="zone" readonly></label></div>
+            <button class="profile-save" type="submit">Save profile</button>
+          </form>
+        </div>
+        <form id="passwordForm" class="profile-password-form">
+          <h3>Change password</h3>
+          <div class="profile-detail-grid"><label>Current password<input name="current_password" type="password" required autocomplete="current-password"></label><label>New password<input name="new_password" type="password" required minlength="8" autocomplete="new-password"></label></div>
+          <button class="profile-save secondary" type="submit">Change password</button>
+        </form>
+        <div class="profile-recent"><h3>Recent notifications</h3><div id="profileNotifications"><p class="notification-empty">Loading notifications…</p></div></div>
+      </div>
+    </section>
 
     <main class="dashboard" id="dashboard" aria-live="polite">
       <section class="kpi-row" id="kpiRow" aria-label="Key performance indicators"></section>
@@ -143,9 +171,9 @@
 
   <script src="/js/config.js?v=20261008-10"></script>
   <script src="/js/components.js?v=20261009-4"></script>
-  <script src="/js/api.js?v=20261021-4"></script>
-  <script src="/js/app.js?v=20261021-3"></script>
-  <script src="/js/ai-insights.js?v=20261012-3"></script>
-  <script src="/js/auth.js?v=20261021-4"></script>
+  <script src="/js/api.js?v=20261021-9"></script>
+  <script src="/js/app.js?v=20261021-5"></script>
+  <script src="/js/ai-insights.js?v=20261021-1"></script>
+  <script src="/js/auth.js?v=20261021-11"></script>
 </body>
 </html>

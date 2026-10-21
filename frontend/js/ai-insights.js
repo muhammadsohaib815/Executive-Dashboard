@@ -111,8 +111,38 @@
     mode: 'employee', band: 'all', visibleCount: 4, enabled: false, loading: false,
     data: null, request: 0, designation: 'ALL', month: defaultMonths[0] || 'Jul-2026',
     monthOptions: defaultMonths, fy: fiscalYearForMonth(defaultMonths[0] || 'Jul-2026'), monthTouched: false,
-    pageSize: 20, pageOffset: 0
+    pageSize: 20, pageOffset: 0, allowedDesignations: null, metadataDesignations: null, authenticatedUser: null
   };
+
+  // The AI panel follows the same hierarchy scope as the dashboard.  A
+  // scoped account must never be offered a designation outside its reporting
+  // tree; field users are locked to their own position level.  Managers can
+  // still choose an accessible level (for example an RSM can choose ASM),
+  // while the API remains the final authorization boundary.
+  const fieldDesignations = new Set(['MIO', 'SPO', 'PS', 'SB', 'ASMTE', 'CM', 'SPOWS', 'TE']);
+  const preferredChildLevels = {
+    EXEC: ['RSM', 'ASM', 'SPO', 'MIO'], HOD: ['RSM', 'ASM', 'SPO', 'MIO'], DGM: ['RSM', 'ASM', 'SPO', 'MIO'],
+    RSM: ['ASM', 'SPO', 'MIO'], ASM: ['SPO', 'MIO', 'PS', 'SB', 'ASMTE', 'CM', 'SPOWS', 'TE']
+  };
+  function scopedDesignationFallback(available) {
+    const values = available.filter(value => value && value !== 'ALL');
+    if (!values.length) return 'ALL';
+    const own = String(state.authenticatedUser?.designation || '').trim().toUpperCase();
+    if (fieldDesignations.has(own) && values.includes(own)) return own;
+    const preferred = (preferredChildLevels[own] || []).find(value => values.includes(value));
+    return preferred || (values.includes(own) ? own : values[0]);
+  }
+  function setAllowedDesignations(values) {
+    const normalized = Array.from(new Set((values || []).map(value => String(value || '').trim().toUpperCase()).filter(Boolean)));
+    state.metadataDesignations = normalized;
+    const scoped = state.authenticatedUser && state.authenticatedUser.role !== 'admin' && state.authenticatedUser.scope_position_code;
+    state.allowedDesignations = scoped ? normalized.filter(value => value !== 'ALL') : null;
+    if (state.allowedDesignations && (!state.allowedDesignations.includes(state.designation))) {
+      state.designation = scopedDesignationFallback(state.allowedDesignations);
+      state.pageOffset = 0;
+      state.visibleCount = 4;
+    }
+  }
 
   function filters() {
     const params = new URLSearchParams({
@@ -132,6 +162,7 @@
       const metadata = await getJSON('/api/meta?team=COMBINED');
       const months = Array.isArray(metadata.months) && metadata.months.length ? metadata.months : defaultMonths;
       state.monthOptions = months;
+      if (Array.isArray(metadata.designations)) setAllowedDesignations(metadata.designations);
       if (!state.monthTouched) state.month = months[months.length - 1];
       else if (!months.includes(state.month)) state.month = months[months.length - 1];
       state.fy = fiscalYearForMonth(state.month);
@@ -148,6 +179,8 @@
 
   function shell() {
     const productMode = state.mode === 'product';
+    const designationOptions = (state.allowedDesignations || DESIGNATIONS.filter(([value]) => value !== 'ALL').map(([value]) => value));
+    const designationValues = state.allowedDesignations ? designationOptions : ['ALL', ...designationOptions];
     root.classList.add('open');
     root.innerHTML = `
       <header class="ai-head ai-compact-head">
@@ -156,7 +189,10 @@
       </header>
       <div class="ai-compact-body" ${state.enabled ? '' : 'hidden'}>
         <div class="ai-context"><div class="ai-context-filters">
-          <label>Designation <select id="aiDesignation">${DESIGNATIONS.map(([value, label]) => `<option value="${value}" ${value === state.designation ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
+          <label>Designation <select id="aiDesignation">${designationValues.map(value => {
+            const label = (DESIGNATIONS.find(item => item[0] === value) || [value, value])[1];
+            return `<option value="${value}" ${value === state.designation ? 'selected' : ''}>${label}</option>`;
+          }).join('')}</select></label>
           <label>Month <select id="aiMonth">${state.monthOptions.map(month => `<option value="${esc(month)}" ${month === state.month ? 'selected' : ''}>${esc(month)}</option>`).join('')}</select></label>
           <div class="ai-mode-toggle" role="tablist" aria-label="AI insight scope">
             <button type="button" class="${state.mode === 'employee' ? 'active' : ''}" data-ai-mode="employee" aria-selected="${state.mode === 'employee'}">Employee</button>
@@ -307,6 +343,28 @@
     body.hidden = !willOpen;
     diag.classList.toggle('is-open', willOpen);
     toggle.setAttribute('aria-expanded', String(willOpen));
+  });
+
+  // auth.js loads after this module.  Reconcile the AI selector as soon as
+  // the authenticated account is known, so a direct SPO/MIO account cannot
+  // briefly see national or unrelated employee choices.
+  document.addEventListener('dashboard:auth-user', event => {
+    state.authenticatedUser = event.detail || null;
+    const scoped = state.authenticatedUser.role !== 'admin' && state.authenticatedUser.scope_position_code;
+    if (scoped) {
+      setAllowedDesignations(state.metadataDesignations || []);
+      const current = Array.isArray(state.allowedDesignations) ? state.allowedDesignations : [];
+      if (current.length) {
+        const next = scopedDesignationFallback(current);
+        if (next !== state.designation) {
+          state.designation = next;
+          state.pageOffset = 0;
+          state.visibleCount = 4;
+        }
+      }
+      shell();
+      if (state.enabled) loadInsights();
+    }
   });
 
   shell();

@@ -77,6 +77,7 @@
   let territoryScopeRequestId = 0;
   let activeTerritoryScope = null;
   let activeEmployeeRecord = null;
+  let authenticatedDashboardUser = null;
   let lastHeaderMeta = {};
   let filterRequestId = 0;
 
@@ -492,7 +493,48 @@
     }
   }
 
+  async function resetDashboardView() {
+    // A scoped user must remain on their assigned position after reset.  The
+    // same bootstrap path restores the assigned team, designation and scope.
+    if (authenticatedDashboardUser && authenticatedDashboardUser.role !== "admin" && authenticatedDashboardUser.scope_position_code) {
+      await applyAuthenticatedScope(authenticatedDashboardUser);
+      return;
+    }
+
+    employeeScopeRequestId += 1;
+    territoryScopeRequestId += 1;
+    filterRequestId += 1;
+    activeTerritoryScope = null;
+    activeEmployeeRecord = null;
+    employeeScopeSnapshot = null;
+    autoFilledSelections.clear();
+    for (const field of filterFields) {
+      userSelections[field] = "All";
+      effectiveSelections[field] = "All";
+    }
+    lastHeaderMeta = {};
+    periodMode = "MTD";
+    valueMetric = "net_with_reg";
+    $("periodToggle")?.querySelectorAll("[data-period]").forEach(item => {
+      item.setAttribute("aria-pressed", String(item.dataset.period === periodMode));
+    });
+    $("valueToggle")?.querySelectorAll("[data-value-metric]").forEach(item => {
+      item.setAttribute("aria-pressed", String(item.dataset.valueMetric === valueMetric));
+    });
+    setTeamOptions([], "COMBINED");
+    $("fFY").value = "";
+    $("fDesignation").value = "";
+    await loadMeta("COMBINED", { preferLatestMonth: true });
+    await loadFilters("ALL", "COMBINED");
+    window.setDashboardDesignation?.("ALL");
+    updateDashboardHeader();
+    refresh({ reloadFilters: false });
+  }
+
+  window.resetDashboardView = resetDashboardView;
+
   document.addEventListener("dashboard:auth-user", event => {
+    authenticatedDashboardUser = event.detail || null;
     applyAuthenticatedScope(event.detail);
   });
 
@@ -770,7 +812,8 @@
       const callDesignation = String(d.meta?.designation || "").toUpperCase();
       const callSource = String(callData.source_type || "FMCG").toUpperCase();
       const isPharmaCalls = callSource === "PHARMA";
-      const isManagerCallView = ["ASM", "RSM"].includes(callDesignation);
+      const isExecutiveCallView = ["EXEC", "HOD", "DGM", "ALL", "EXECUTIVE"].includes(callDesignation);
+      const isManagerCallView = ["ASM", "RSM"].includes(callDesignation) || isExecutiveCallView;
       const isFieldCallView = ["SPO", "MIO", "PS", "SB", "ASMTE", "CM", "SPOWS", "TE"].includes(callDesignation);
       if (!callData.available) {
         if (callHeading) callHeading.textContent = "4. CALL DATA";
@@ -779,9 +822,11 @@
       } else if (isManagerCallView) {
         const rows = (callData.manager_days || []).slice(0, 10);
         const maxDays = Math.max(1, ...rows.map(row => Number(row.call_days || 0)));
-        if (callHeading) callHeading.textContent = "4. MANAGER FIELD-WORK DAYS";
+        if (callHeading) callHeading.textContent = isExecutiveCallView ? "4. TEAM CALL PERFORMANCE" : "4. MANAGER FIELD-WORK DAYS";
         if (callDescription) callDescription.textContent = isPharmaCalls ? "Distinct Pharma provider-call days by field employee" : "Distinct FMCG customer-call and exception days by field employee";
-        callBox.innerHTML = rows.length ? `<div class="call-manager-chart"><div class="call-chart-title">SPO ACCOMPANIMENT DAYS</div><div class="hbar spo-data-scroll call-manager-list">${rows.map(row => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(row.employee)}</b><small>${html(row.manager)} · ${fmt(row.calls, 0)} calls</small></div><div class="hbar-track"><span class="hbar-fill call-days-fill" style="width:${Math.min(100, Number(row.call_days || 0) / maxDays * 100)}%"></span></div><div class="hbar-val call-days-val">${fmt(row.call_days, 0)}d</div></div>`).join("")}</div></div>` : `<div class="empty-state"><p>No SPO call-work days match the selected ASM/RSM scope and month.</p></div>`;
+        const callChartTitle = isExecutiveCallView ? "TOP TEAM MEMBERS BY CALL DAYS" : "SPO ACCOMPANIMENT DAYS";
+        const callEmptyText = isExecutiveCallView ? "No call activity matches the selected executive scope and month." : "No SPO call-work days match the selected ASM/RSM scope and month.";
+        callBox.innerHTML = rows.length ? `<div class="call-manager-chart"><div class="call-chart-title">${callChartTitle}</div><div class="hbar spo-data-scroll call-manager-list">${rows.map(row => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(row.employee)}</b><small>${html(row.manager)} · ${fmt(row.calls, 0)} calls</small></div><div class="hbar-track"><span class="hbar-fill call-days-fill" style="width:${Math.min(100, Number(row.call_days || 0) / maxDays * 100)}%"></span></div><div class="hbar-val call-days-val">${fmt(row.call_days, 0)}d</div></div>`).join("")}</div></div>` : `<div class="empty-state"><p>${callEmptyText}</p></div>`;
       } else if (isFieldCallView) {
         const shops = callData.shops || [];
         const maxCalls = Math.max(1, ...shops.map(row => Number(row.calls || 0)));
@@ -856,22 +901,47 @@
     if (actions) {
       actions.innerHTML = `<form class="form-grid action-plan-form" data-action-plan-form>
         <label class="form-field wide"><span>Corrective Action:</span><textarea name="action_text" rows="3" required maxlength="4000" placeholder="Add action based on the insights above..."></textarea></label>
-        <label class="form-field"><span>Action Owner:</span><input name="action_owner" type="text" maxlength="200" placeholder="Owner name"></label>
+        <label class="form-field"><span data-action-owner-label>Action Owner:</span><select name="action_owner" class="action-owner-select" required><option value="">Loading reporting staff…</option></select><small class="action-owner-help">The corrective action message will be sent to the selected owner.</small></label>
         <label class="form-field"><span>Timeline / Due Date:</span><input name="due_date" type="date"></label>
         <label class="form-field"><span>Priority:</span><select name="priority"><option>High</option><option selected>Medium</option><option>Low</option></select></label>
         <label class="form-field"><span>Status:</span><select name="status"><option>Open</option><option>In Progress</option><option>Complete</option></select></label>
-        <label class="form-field wide"><span>Send notification to:</span><select name="recipient_user_ids" class="action-recipient-select" multiple required size="4"><option>Loading team members…</option></select><small>Select one or more people in your reporting hierarchy.</small></label>
-        <div class="action-plan-submit wide"><button class="action-plan-send" type="submit">Save action plan and notify</button><span class="action-plan-message" role="status"></span></div>
+        <select name="recipient_user_ids" class="action-recipient-select" multiple required hidden aria-hidden="true" tabindex="-1"><option>Loading reporting staff…</option></select>
+        <div class="action-plan-submit wide"><button class="action-plan-send" type="submit">Save action plan &amp; send message</button><span class="action-plan-message" role="status"></span></div>
       </form>`;
       const form = actions.querySelector("[data-action-plan-form]");
-      getJSON("/api/action-plan-recipients").then(({ recipients }) => {
+      getJSON("/api/action-plan-recipients").then(({ recipients, recipient_label: recipientLabel }) => {
+        const owner = form?.querySelector("[name=action_owner]");
         const select = form?.querySelector("[name=recipient_user_ids]");
-        if (!select) return;
-        select.innerHTML = recipients.length ? recipients.map(r => `<option value="${Number(r.id)}">${html(r.full_name)} · ${html(r.role)} · ${html(r.position_code)}</option>`).join("") : "<option value=\"\">No assigned dashboard accounts are available in your hierarchy</option>";
-        select.disabled = !recipients.length;
+        const submit = form?.querySelector("[type=submit]");
+        const label = form?.querySelector("[data-action-owner-label]");
+        const help = form?.querySelector(".action-owner-help");
+        if (!owner || !select) return;
+        const labelText = recipientLabel || "reporting staff";
+        if (label) label.textContent = `Action Owner (${labelText})`;
+        if (help) help.textContent = `The corrective action message will be sent to the selected ${labelText}.`;
+        if (!recipients.length) {
+          owner.innerHTML = `<option value="">No ${html(labelText)} accounts available</option>`;
+          owner.disabled = true;
+          select.innerHTML = "";
+          submit && (submit.disabled = true);
+          return;
+        }
+        owner.innerHTML = `<option value="">Select ${html(labelText)}</option>` + recipients.map(r => `<option value="${html(r.full_name)}" data-user-id="${Number(r.id)}">${html(r.employee_name || r.full_name)} ? ${html(r.designation || labelText)} ? ${html(r.position_code)}</option>`).join("");
+        select.innerHTML = recipients.map(r => `<option value="${Number(r.id)}">${html(r.full_name)}</option>`).join("");
+        const syncOwnerRecipient = () => {
+          const ownerId = owner.selectedOptions[0]?.dataset.userId || "";
+          [...select.options].forEach(option => { option.selected = ownerId !== "" && option.value === ownerId; });
+        };
+        owner.addEventListener("change", syncOwnerRecipient);
+        if (recipients.length === 1) {
+          owner.value = recipients[0].full_name;
+          syncOwnerRecipient();
+        }
       }).catch(error => {
-        const select = form?.querySelector("[name=recipient_user_ids]");
-        if (select) { select.innerHTML = `<option value="">${html(error.message)}</option>`; select.disabled = true; }
+        const owner = form?.querySelector("[name=action_owner]");
+        const submit = form?.querySelector("[type=submit]");
+        if (owner) { owner.innerHTML = `<option value="">${html(error.message)}</option>`; owner.disabled = true; }
+        submit && (submit.disabled = true);
       });
     }
   }
@@ -1072,6 +1142,11 @@
   document.addEventListener("dashboard:rendered", () => {
     unavailablePanelBodies.clear();
     refresh({ reloadFilters: true });
+  });
+  $("resetDashboard")?.addEventListener("click", () => {
+    const button = $("resetDashboard");
+    button.disabled = true;
+    Promise.resolve(resetDashboardView()).finally(() => { button.disabled = false; });
   });
   $("valueToggle")?.addEventListener("click", event => {
     const button = event.target.closest("[data-value-metric]");
@@ -1404,7 +1479,10 @@
       : (effectiveSelections.employee !== "All" ? effectiveSelections.employee : ($("fName")?.value !== "All" ? $("fName")?.value : ""));
     const employeeName = selectedEmployee ? String(selectedEmployee).trim() : "";
 
-    const rawTeam = currentMeta.team || currentMeta.team_filter || $("fTeam")?.value || (activeEmployeeRecord && activeEmployeeRecord.team_filter) || "COMBINED";
+    // The explicit team toggle is authoritative. `meta.team` describes the
+    // selected employee's source team and can be FMCG even while Combined is
+    // selected, which must not change the dashboard title.
+    const rawTeam = currentMeta.team_filter || $("fTeam")?.value || currentMeta.team || (activeEmployeeRecord && activeEmployeeRecord.team_filter) || "COMBINED";
     const teamDisplay = normalizeTeamLabel(rawTeam);
 
     const rawDesig = (currentMeta.designation || activeEmployeeRecord?.designation || $("fDesignation")?.value || "").toUpperCase();
@@ -1468,7 +1546,7 @@
       [...select.options].forEach(option => { option.selected = false; });
     } catch (error) {
       message.textContent = error.message; message.classList.add("error");
-    } finally { button.disabled = false; button.textContent = "Save action plan and notify"; }
+    } finally { button.disabled = false; button.textContent = "Save action plan & send message"; }
   });
   window.updateDashboardHeader = updateDashboardHeader;
 })();
