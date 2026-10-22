@@ -8,6 +8,7 @@
   const ids = { employee: "fName", region: "fRegion", zone: "fZone", subzone: "fSubZone", territory: "fTerritory", month: "fMonth", fy: "fFY" };
   let valueMetric = "net_with_reg";
   let periodMode = "MTD";
+  let closeActionOwnerPicker = null;
 
   /* KPI label -> API metric */
   const METRIC = {
@@ -80,6 +81,18 @@
   let authenticatedDashboardUser = null;
   let lastHeaderMeta = {};
   let filterRequestId = 0;
+
+  const canChooseActionOwner = () => ["admin", "exec", "executive"].includes(
+    String(authenticatedDashboardUser?.role || "").trim().toLowerCase()
+  );
+
+  const selectedDashboardEmployee = () => {
+    if (!canChooseActionOwner()) return null;
+    const record = activeEmployeeRecord;
+    const selectedName = effectiveSelections.employee;
+    return employeeScopeSnapshot && record?.position_code && selectedName !== "All" &&
+      String(record.employee || "").trim() === String(selectedName || "").trim() ? record : null;
+  };
 
   const current = () => ({
     designation: $("fDesignation").value || "ALL",
@@ -536,6 +549,7 @@
   document.addEventListener("dashboard:auth-user", event => {
     authenticatedDashboardUser = event.detail || null;
     applyAuthenticatedScope(event.detail);
+    if (latestData) paintSpoPanels(latestData);
   });
 
   function renderDropdowns(searchField = "", search = "") {
@@ -700,9 +714,9 @@
     const actualLabel = metricIsCount ? "Actual" : "Sales";
     const metricLabel = d.meta?.value_metric_label || "NET SALE VALUE";
     const key = getAppEl()?.dataset?.designation || "ALL";
-    const topChoice = (document.querySelector("#panel-1 .mini-select:not(.hierarchy-role-select)") || {}).value || "Top 10";
-    const skuChoice = (document.querySelector("#panel-2 .mini-select") || {}).value || "Top 10";
-    const discountChoice = (document.querySelector("#panel-3 .mini-select") || {}).value || "Top 10";
+    const topChoice = (document.querySelector("#panel-1 .mini-select:not(.hierarchy-role-select)") || {}).value || "Top";
+    const skuChoice = (document.querySelector("#panel-2 .mini-select") || {}).value || "Top";
+    const discountChoice = (document.querySelector("#panel-3 .mini-select") || {}).value || "Top";
     const showBottom = value => String(value).toLowerCase().startsWith("bottom");
     const achievementTone = value => Number(value) >= 100 ? "achievement-high" : Number(value) >= 70 ? "achievement-average" : "achievement-low";
     const customerBox = document.querySelector("[data-spo-top-customers]");
@@ -729,8 +743,9 @@
           roleSelect.value = roles.includes(previous)
             ? previous
             : (!selectorAlreadyRendered && d.meta?.designation === "ALL" && roles.includes("ASM") ? "ASM" : "");
+          window.syncPanelChoice?.(roleSelect);
         } else {
-          roleSelect?.remove();
+          if (roleSelect) (roleSelect.closest(".panel-choice") || roleSelect).remove();
           roleSelect = null;
         }
         const selectedRole = roleSelect?.value || "";
@@ -739,13 +754,13 @@
         if (heading) heading.textContent = `1. ${showBottom(topChoice) ? "BOTTOM" : "TOP"} ${label} - SALES ACHIEVEMENT %`;
         if (description) description.textContent = selectedRole ? `Achievement percentage by ${selectedRole} name and position` : "Achievement percentage by name and position";
         const sorted = filteredHierarchy.filter(r => r.achievement_pct != null).sort((a, b) => a.achievement_pct - b.achievement_pct);
-        const rows = showBottom(topChoice) ? sorted.slice(0, 10) : sorted.slice(-10).reverse();
+        const rows = showBottom(topChoice) ? sorted.slice(0, 25) : sorted.slice(-25).reverse();
         customerBox.innerHTML = rows.length ? rows.map(r => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(r.employee)}</b><small>${html(r.designation)} · ${html(r.position_code)}</small></div><div class="hbar-track"><span class="hbar-fill ${achievementTone(r.achievement_pct)}" style="width:${Math.min(100, Math.max(0, Number(r.achievement_pct)))}%"></span></div><div class="hbar-val ${achievementTone(r.achievement_pct)}">${pct(r.achievement_pct)}</div></div>`).join("") : `<div class="empty-state"><p>No ${html(selectedRole || "team")} members with matched monthly targets.</p></div>`;
       } else {
         if (heading) heading.textContent = `1. ${showBottom(topChoice) ? "BOTTOM" : "TOP"} CUSTOMERS / SHOPS PERFORMANCE %`;
         if (description) description.textContent = "Customer share of positive net sales";
         const source = showBottom(topChoice) ? (sections.bottom_customers || []) : (sections.top_customers || []);
-        const rows = source.slice(0, 10);
+        const rows = source.slice(0, 25);
         customerBox.innerHTML = rows.length ? rows.map((r, index) => `<div class="hbar-row ranked-row"><div class="hbar-label wide"><b>${html(r.cust_name || "Unknown customer")}</b><small class="ranked-values"><span>Sales ${rs(r.net_sales)}</span></small></div><div class="hbar-track"><span class="hbar-fill customer-rank-${index < 3 ? "high" : index < 7 ? "average" : "low"}" style="width:${Math.min(100, Math.max(0, Number(r.performance_pct || 0)))}%"></span></div><div class="hbar-val">${r.performance_pct == null ? "--" : pct(r.performance_pct)}</div></div>`).join("") : `<div class="empty-state"><p>No customer sales data available for the selected filters.</p></div>`;
       }
     }
@@ -758,7 +773,7 @@
       {
         const source = sections.product_performance || [];
         const ranked = [...source].filter(r => r.achievement_pct != null).sort((a, b) => Number(a.achievement_pct) - Number(b.achievement_pct));
-        const rows = showBottom(skuChoice) ? ranked.slice(0, 10) : ranked.slice(-10).reverse();
+        const rows = showBottom(skuChoice) ? ranked.slice(0, 25) : ranked.slice(-25).reverse();
         // The bar must follow the achievement % printed at the right. Using
         // sales value here made a lower achievement sometimes look longer.
         const achievementMax = Math.max(100, ...rows.map(r => Number(r.achievement_pct || 0)));
@@ -793,10 +808,10 @@
         const rankedProducts = [...(sections.discount_products || [])]
           .filter(row => row.discount_pct != null)
           .sort((a, b) => Number(a.discount_pct) - Number(b.discount_pct));
-        const rows = showBottom(discountChoice) ? rankedProducts.slice(0, 10) : rankedProducts.slice(-10).reverse();
+        const rows = showBottom(discountChoice) ? rankedProducts.slice(0, 25) : rankedProducts.slice(-25).reverse();
         const barMax = Math.max(1, ...rows.map(row => Number(row.discount_pct || 0)));
         const discountTone = value => Number(value) >= 20 ? "discount-high" : Number(value) >= 10 ? "discount-medium" : "discount-low";
-        if (title) title.textContent = showBottom(discountChoice) ? "BOTTOM 10 PRODUCT DISCOUNT %" : "TOP 10 PRODUCT DISCOUNT %";
+        if (title) title.textContent = showBottom(discountChoice) ? "BOTTOM PRODUCT DISCOUNT %" : "TOP PRODUCT DISCOUNT %";
         if (productBox) productBox.innerHTML = rows.length ? rows.map(row => {
           const tone = discountTone(row.discount_pct);
           return `<div class="hbar-row"><div class="hbar-label wide"><b>${html(row.prd_name || "Unknown product")}</b><small>Discount ${rs(row.discount_value)} · TP ${rs(row.tp_value)}</small></div><div class="hbar-track"><span class="hbar-fill ${tone}" style="width:${Math.min(100, Math.max(0, Number(row.discount_pct || 0) / barMax * 100))}%"></span></div><div class="hbar-val ${tone}">${pct(row.discount_pct)}</div></div>`;
@@ -899,48 +914,154 @@
     }
     const actions = document.querySelector("[data-spo-actions]");
     if (actions) {
+      closeActionOwnerPicker?.();
+      const canChooseOwner = canChooseActionOwner();
+      const selectedOwner = selectedDashboardEmployee();
       actions.innerHTML = `<form class="form-grid action-plan-form" data-action-plan-form>
         <label class="form-field wide"><span>Corrective Action:</span><textarea name="action_text" rows="3" required maxlength="4000" placeholder="Add action based on the insights above..."></textarea></label>
-        <label class="form-field"><span data-action-owner-label>Action Owner:</span><select name="action_owner" class="action-owner-select" required><option value="">Loading reporting staff…</option></select><small class="action-owner-help">The corrective action message will be sent to the selected owner.</small></label>
+        ${selectedOwner ? `<div class="action-owner-fixed wide"><span>Message to selected employee</span><strong>${html(selectedOwner.employee)} · ${html(selectedOwner.designation)} · ${html(selectedOwner.position_code)}</strong><input type="hidden" name="action_owner_position_code" value="${html(selectedOwner.position_code)}"></div>` : !canChooseOwner ? `<div class="action-owner-fixed wide"><span>Message to reporting manager</span><strong data-reporting-recipient>Loading reporting manager...</strong><input type="hidden" name="action_owner_position_code" value=""></div>` : `<label class="form-field wide"><span>Owner Designation:</span><select class="action-owner-select" data-owner-designation><option value="">All designations</option></select></label>
+        <div class="form-field wide action-owner-field"><span id="actionOwnerLabel" data-action-owner-label>Action Owner:</span>
+          <input type="hidden" name="action_owner_position_code" value="">
+          <div class="action-owner-picker" data-owner-picker>
+            <button type="button" class="action-owner-toggle" data-owner-toggle aria-labelledby="actionOwnerLabel actionOwnerValue" aria-haspopup="listbox" aria-expanded="false"><span id="actionOwnerValue" data-owner-selected>Loading staff…</span><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg></button>
+            <div class="filter-picker-menu action-owner-menu" data-owner-menu hidden>
+              <input class="filter-picker-search" type="search" data-owner-search placeholder="Search name or position code" aria-label="Search action owners" autocomplete="off">
+              <div class="filter-picker-options" data-owner-options role="listbox" aria-labelledby="actionOwnerLabel"></div>
+            </div>
+          </div>
+          <small class="action-owner-help">The message is addressed to the selected employee's position code.</small>
+        </div>`}
         <label class="form-field"><span>Timeline / Due Date:</span><input name="due_date" type="date"></label>
-        <label class="form-field"><span>Priority:</span><select name="priority"><option>High</option><option selected>Medium</option><option>Low</option></select></label>
-        <label class="form-field"><span>Status:</span><select name="status"><option>Open</option><option>In Progress</option><option>Complete</option></select></label>
-        <select name="recipient_user_ids" class="action-recipient-select" multiple required hidden aria-hidden="true" tabindex="-1"><option>Loading reporting staff…</option></select>
+        <label class="form-field"><span>Priority:</span><select name="priority" class="action-priority-select" data-priority="Medium"><option value="High">High</option><option value="Medium" selected>Medium</option><option value="Low">Low</option></select></label>
         <div class="action-plan-submit wide"><button class="action-plan-send" type="submit">Save action plan &amp; send message</button><span class="action-plan-message" role="status"></span></div>
       </form>`;
       const form = actions.querySelector("[data-action-plan-form]");
-      getJSON("/api/action-plan-recipients").then(({ recipients, recipient_label: recipientLabel }) => {
-        const owner = form?.querySelector("[name=action_owner]");
-        const select = form?.querySelector("[name=recipient_user_ids]");
+      if (selectedOwner) form.dataset.fixedOwnerCode = selectedOwner.position_code;
+      const priority = form?.querySelector("[name=priority]");
+      priority?.addEventListener("change", () => { priority.dataset.priority = priority.value; });
+      if (!canChooseOwner) {
+        const submit = form.querySelector("[type=submit]");
+        submit.disabled = true;
+        getJSON("/api/action-plan-recipient").then(({ recipient }) => {
+          if (!form.isConnected) return;
+          form.querySelector("[data-reporting-recipient]").textContent = `${recipient.employee_name} · ${recipient.designation}`;
+          const ownerInput = form.querySelector("[name=action_owner_position_code]");
+          ownerInput.defaultValue = recipient.position_code;
+          ownerInput.value = recipient.position_code;
+          form.dataset.reportingOwnerCode = recipient.position_code;
+          submit.disabled = false;
+        }).catch(error => {
+          if (!form.isConnected) return;
+          form.querySelector("[data-reporting-recipient]").textContent = error.message;
+          form.querySelector(".action-plan-message").textContent = error.message;
+          form.querySelector(".action-plan-message").classList.add("error");
+        });
+      } else if (!selectedOwner) getJSON("/api/action-plan-recipients").then(({ recipients, recipient_label: recipientLabel }) => {
+        if (!form?.isConnected) return;
+        const owner = form?.querySelector("[name=action_owner_position_code]");
+        const designation = form?.querySelector("[data-owner-designation]");
+        const picker = form?.querySelector("[data-owner-picker]");
+        const toggle = form?.querySelector("[data-owner-toggle]");
+        const selectedLabel = form?.querySelector("[data-owner-selected]");
+        const menu = form?.querySelector("[data-owner-menu]");
+        const search = form?.querySelector("[data-owner-search]");
+        const options = form?.querySelector("[data-owner-options]");
         const submit = form?.querySelector("[type=submit]");
         const label = form?.querySelector("[data-action-owner-label]");
         const help = form?.querySelector(".action-owner-help");
-        if (!owner || !select) return;
+        if (!owner || !designation || !picker || !toggle || !selectedLabel || !menu || !search || !options) return;
         const labelText = recipientLabel || "reporting staff";
         if (label) label.textContent = `Action Owner (${labelText})`;
-        if (help) help.textContent = `The corrective action message will be sent to the selected ${labelText}.`;
+        if (help) help.textContent = "The message is addressed to the selected employee's position code.";
         if (!recipients.length) {
-          owner.innerHTML = `<option value="">No ${html(labelText)} accounts available</option>`;
-          owner.disabled = true;
-          select.innerHTML = "";
+          selectedLabel.textContent = `No ${labelText} employees available`;
+          toggle.disabled = true;
           submit && (submit.disabled = true);
           return;
         }
-        owner.innerHTML = `<option value="">Select ${html(labelText)}</option>` + recipients.map(r => `<option value="${html(r.full_name)}" data-user-id="${Number(r.id)}">${html(r.employee_name || r.full_name)} ? ${html(r.designation || labelText)} ? ${html(r.position_code)}</option>`).join("");
-        select.innerHTML = recipients.map(r => `<option value="${Number(r.id)}">${html(r.full_name)}</option>`).join("");
-        const syncOwnerRecipient = () => {
-          const ownerId = owner.selectedOptions[0]?.dataset.userId || "";
-          [...select.options].forEach(option => { option.selected = ownerId !== "" && option.value === ownerId; });
+        const designations = [...new Set(recipients.map(r => r.designation).filter(Boolean))].sort();
+        designation.innerHTML = '<option value="">All designations</option>' + designations.map(value => `<option value="${html(value)}">${html(value)}</option>`).join("");
+        const updateOwnerHelp = () => {
+          const selected = recipients.find(r => r.position_code === owner.value);
+          const availableCount = recipients.filter(r => !designation.value || r.designation === designation.value).length;
+          selectedLabel.textContent = selected ? `${selected.employee_name} · ${selected.designation} · ${selected.position_code}` : `Select ${labelText} (${availableCount})`;
+          toggle.title = selectedLabel.textContent;
+          if (help) help.textContent = !selected ? "The message is addressed to the selected employee's position code."
+            : selected.user_id ? "An in-app message will be sent to this employee now."
+            : "The in-app message will wait for an account assigned to this position code.";
         };
-        owner.addEventListener("change", syncOwnerRecipient);
-        if (recipients.length === 1) {
-          owner.value = recipients[0].full_name;
-          syncOwnerRecipient();
-        }
+        const renderOwners = () => {
+          const term = search.value.trim().toLocaleLowerCase();
+          const eligible = recipients.filter(r => !designation.value || r.designation === designation.value);
+          const matches = eligible.filter(r => !term || `${r.employee_name} ${r.position_code} ${r.designation}`.toLocaleLowerCase().includes(term));
+          options.innerHTML = `<button type="button" class="filter-picker-option filter-picker-clear" data-owner-value="" role="option">Select ${html(labelText)} (${eligible.length})</button>` +
+            (matches.length ? matches.map(r => `<button type="button" class="filter-picker-option" data-owner-value="${html(r.position_code)}" role="option" aria-selected="${r.position_code === owner.value}">${html(r.employee_name)} · ${html(r.designation)} · ${html(r.position_code)}</button>`).join("") : '<div class="filter-picker-empty">No matching employees</div>');
+          updateOwnerHelp();
+        };
+        const closePicker = () => {
+          if (menu.hidden) return;
+          menu.hidden = true;
+          toggle.setAttribute("aria-expanded", "false");
+          picker.append(menu);
+          document.removeEventListener("pointerdown", outsidePicker);
+          document.removeEventListener("keydown", escapePicker);
+          window.removeEventListener("scroll", scrollPicker, true);
+          window.removeEventListener("resize", positionPicker);
+        };
+        const positionPicker = () => {
+          const rect = toggle.getBoundingClientRect();
+          const below = window.innerHeight - rect.bottom - 8;
+          const above = rect.top - 8;
+          const openAbove = below < 220 && above > below;
+          const height = Math.min(320, Math.max(120, openAbove ? above : below));
+          const width = Math.min(rect.width, window.innerWidth - 16);
+          menu.style.width = `${width}px`;
+          menu.style.height = `${height}px`;
+          menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+          menu.style.top = `${openAbove ? Math.max(8, rect.top - height - 4) : rect.bottom + 4}px`;
+        };
+        const outsidePicker = event => { if (!picker.contains(event.target) && !menu.contains(event.target)) closePicker(); };
+        const escapePicker = event => { if (event.key === "Escape") { closePicker(); toggle.focus(); } };
+        const scrollPicker = event => { if (!menu.contains(event.target)) closePicker(); };
+        toggle.addEventListener("click", () => {
+          if (!menu.hidden) { closePicker(); return; }
+          search.value = "";
+          renderOwners();
+          document.body.append(menu);
+          menu.hidden = false;
+          positionPicker();
+          toggle.setAttribute("aria-expanded", "true");
+          document.addEventListener("pointerdown", outsidePicker);
+          document.addEventListener("keydown", escapePicker);
+          window.addEventListener("scroll", scrollPicker, true);
+          window.addEventListener("resize", positionPicker);
+          search.focus();
+        });
+        options.addEventListener("click", event => {
+          const option = event.target.closest("[data-owner-value]");
+          if (!option) return;
+          owner.value = option.dataset.ownerValue;
+          toggle.classList.remove("error");
+          const message = form.querySelector(".action-plan-message");
+          if (message) { message.textContent = ""; message.classList.remove("error"); }
+          updateOwnerHelp();
+          closePicker();
+          toggle.focus();
+        });
+        designation.addEventListener("change", () => {
+          if (owner.value && !recipients.some(r => r.position_code === owner.value && (!designation.value || r.designation === designation.value))) owner.value = "";
+          search.value = "";
+          renderOwners();
+          closePicker();
+        });
+        search.addEventListener("input", renderOwners);
+        closeActionOwnerPicker = closePicker;
+        renderOwners();
       }).catch(error => {
-        const owner = form?.querySelector("[name=action_owner]");
+        if (!form?.isConnected) return;
+        const toggle = form?.querySelector("[data-owner-toggle]");
         const submit = form?.querySelector("[type=submit]");
-        if (owner) { owner.innerHTML = `<option value="">${html(error.message)}</option>`; owner.disabled = true; }
+        if (toggle) { toggle.querySelector("[data-owner-selected]").textContent = error.message; toggle.disabled = true; }
         submit && (submit.disabled = true);
       });
     }
@@ -954,7 +1075,7 @@
 
     const heading = document.querySelector("#panel-4 .panel-ttl h2");
     const description = document.querySelector("#panel-4 .panel-ttl p");
-    const mode = document.querySelector("#panel-4 .mini-select")?.value || "Top 10";
+    const mode = document.querySelector("#panel-4 .mini-select")?.value || "Top";
     const metricIsCount = ["units", "cyp"].includes(d.meta?.value_metric);
     const metricValue = n => metricIsCount ? fmt(Number(n || 0), 0) : rs(n);
     const metricLabel = d.meta?.value_metric_label || "NET SALE VALUE";
@@ -962,8 +1083,8 @@
     const byAchievement = (a, b) => (b.achievement_pct ?? -1) - (a.achievement_pct ?? -1);
     let rows = [...allRows].sort(byAchievement);
     rows = rows.filter(r => r.achievement_pct != null);
-    if (String(mode).toLowerCase().startsWith("bottom")) rows = rows.sort((a, b) => a.achievement_pct - b.achievement_pct).slice(0, 10);
-    else rows = rows.slice(0, 10);
+    if (String(mode).toLowerCase().startsWith("bottom")) rows = rows.sort((a, b) => a.achievement_pct - b.achievement_pct).slice(0, 25);
+    else rows = rows.slice(0, 25);
     const achievementScale = Math.max(100, ...rows.map(row => Number(row.achievement_pct || 0)));
 
     if (heading) heading.textContent = `4. PRODUCT PERFORMANCE — ${metricLabel} ACHIEVEMENT`;
@@ -1535,15 +1656,34 @@
     const button = form.querySelector("[type=submit]"), message = form.querySelector(".action-plan-message");
     const values = Object.fromEntries(new FormData(form).entries());
     values.due_date = values.due_date || null;
-    values.recipient_user_ids = [...form.querySelector("[name=recipient_user_ids]").selectedOptions].map(option => Number(option.value)).filter(Number.isInteger);
+    values.status = "Open";
+    if (form.dataset.reportingOwnerCode && values.action_owner_position_code !== form.dataset.reportingOwnerCode) {
+      message.textContent = "Reporting manager changed. Refresh the dashboard before sending.";
+      message.classList.add("error");
+      return;
+    }
+    if (form.dataset.fixedOwnerCode && selectedDashboardEmployee()?.position_code !== form.dataset.fixedOwnerCode) {
+      message.textContent = "Wait for the selected employee to load before sending.";
+      message.classList.add("error");
+      return;
+    }
+    if (!values.action_owner_position_code) {
+      message.textContent = canChooseActionOwner() ? "Select an action owner." : "Wait for your reporting manager to load.";
+      message.classList.add("error");
+      const toggle = form.querySelector("[data-owner-toggle]");
+      toggle?.classList.add("error");
+      toggle?.focus();
+      return;
+    }
     button.disabled = true; button.textContent = "Saving…"; message.textContent = ""; message.classList.remove("error");
     try {
       const response = await fetch("/api/action-plans", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || "Could not save action plan");
-      form.reset(); message.textContent = `Saved and sent to ${result.recipients} recipient(s).`;
-      const select = form.querySelector("[name=recipient_user_ids]");
-      [...select.options].forEach(option => { option.selected = false; });
+      form.reset();
+      form.querySelector("[name=priority]")?.dispatchEvent(new Event("change"));
+      form.querySelector("[data-owner-designation]")?.dispatchEvent(new Event("change"));
+      message.textContent = result.queued ? "Action saved. Message queued for this position's dashboard inbox." : "Action saved and in-app message sent.";
     } catch (error) {
       message.textContent = error.message; message.classList.add("error");
     } finally { button.disabled = false; button.textContent = "Save action plan & send message"; }

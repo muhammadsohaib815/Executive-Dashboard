@@ -84,7 +84,7 @@
 
   function renderProfileNotifications(notifications) {
     if (!profileNotifications) return;
-    profileNotifications.innerHTML = notifications.length ? notifications.slice(0, 8).map(item => `
+    profileNotifications.innerHTML = notifications.length ? notifications.map(item => `
       <article class="profile-notification${item.read_at ? "" : " unread"}">
         <div><b>${escapeHtml(item.priority)} priority · ${escapeHtml(item.status)}</b><time>${escapeHtml(formatDate(item.created_at))}</time></div>
         <strong>${escapeHtml(item.action_text)}</strong>

@@ -228,10 +228,9 @@ function renderKpi(k) {
 }
 
 function renderPanel(p) {
-  const select = p.select ? `<select class="mini-select" aria-label="${p.title} selector">${p.select.map(value => {
-    const label = value === "Top 10" ? "Top" : value === "Bottom 10" ? "Bottom" : value;
-    return `<option value="${value}">${label}</option>`;
-  }).join("")}</select>` : "";
+  const select = p.select ? `<select class="mini-select rank-select" aria-label="${p.title} ranking">${p.select.map(value =>
+    `<option value="${value}">${value}</option>`
+  ).join("")}</select>` : "";
   return `<section class="panel span-${p.span} ${p.stack ? "stack" : ""}" id="panel-${p.n}">
     <header class="panel-head">
       <div class="panel-ttl">
@@ -246,6 +245,115 @@ function renderPanel(p) {
     ${p.note ? `<p class="note foot"><i></i>${p.note}</p>` : ""}
   </section>`;
 }
+
+function syncPanelChoice(select) {
+  if (!select?.isConnected) return;
+  let choice = select.closest(".panel-choice");
+  if (!choice) {
+    choice = document.createElement("div");
+    choice.className = "panel-choice";
+    select.before(choice);
+    choice.append(select);
+    select.classList.add("panel-choice-native");
+    select.tabIndex = -1;
+    select.setAttribute("aria-hidden", "true");
+    choice.insertAdjacentHTML("beforeend", `<button type="button" class="panel-choice-toggle" data-panel-choice-toggle aria-haspopup="listbox" aria-expanded="false"><span data-panel-choice-label></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5 5-5"/></svg></button><div class="panel-choice-menu" data-panel-choice-menu role="listbox" hidden></div>`);
+  }
+  const isDesignation = select.classList.contains("hierarchy-role-select");
+  choice.classList.toggle("panel-choice-designation", isDesignation);
+  choice.classList.toggle("panel-choice-rank", !isDesignation);
+  const toggle = choice.querySelector("[data-panel-choice-toggle]");
+  const menu = choice.querySelector("[data-panel-choice-menu]");
+  const options = Array.from(select.options);
+  toggle.setAttribute("aria-label", select.getAttribute("aria-label") || "Choose ranking");
+  toggle.querySelector("[data-panel-choice-label]").textContent = select.selectedOptions[0]?.textContent || options[0]?.textContent || "Select";
+  menu.replaceChildren();
+  if (isDesignation && options.length > 6) {
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "panel-choice-search";
+    search.placeholder = "Search designation";
+    search.setAttribute("aria-label", "Search designation");
+    search.setAttribute("data-panel-choice-search", "");
+    menu.append(search);
+  }
+  const list = document.createElement("div");
+  list.className = "panel-choice-options";
+  for (const option of options) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "panel-choice-option";
+    item.dataset.panelChoiceOption = option.value;
+    item.setAttribute("role", "option");
+    item.setAttribute("aria-selected", String(option.value === select.value));
+    item.textContent = option.textContent;
+    list.append(item);
+  }
+  menu.append(list);
+}
+window.syncPanelChoice = syncPanelChoice;
+window.enhancePanelChoices = () => document.querySelectorAll("#panelGrid .mini-select").forEach(syncPanelChoice);
+
+(function initPanelChoices() {
+  const close = except => {
+    document.querySelectorAll(".panel-choice").forEach(choice => {
+      if (choice === except) return;
+      choice.querySelector("[data-panel-choice-menu]").hidden = true;
+      choice.querySelector("[data-panel-choice-toggle]").setAttribute("aria-expanded", "false");
+    });
+  };
+  document.addEventListener("click", event => {
+    const toggle = event.target.closest("[data-panel-choice-toggle]");
+    if (toggle) {
+      const choice = toggle.closest(".panel-choice");
+      const menu = choice.querySelector("[data-panel-choice-menu]");
+      const opening = menu.hidden;
+      close(choice);
+      menu.hidden = !opening;
+      toggle.setAttribute("aria-expanded", String(opening));
+      if (opening) {
+        const search = menu.querySelector("[data-panel-choice-search]");
+        if (search) { search.value = ""; menu.querySelectorAll("[data-panel-choice-option]").forEach(item => item.hidden = false); search.focus(); }
+      }
+      return;
+    }
+    const item = event.target.closest("[data-panel-choice-option]");
+    if (item) {
+      const choice = item.closest(".panel-choice");
+      const select = choice.querySelector(".mini-select");
+      select.value = item.dataset.panelChoiceOption;
+      syncPanelChoice(select);
+      close();
+      choice.querySelector("[data-panel-choice-toggle]").focus();
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    if (!event.target.closest(".panel-choice")) close();
+  });
+  document.addEventListener("input", event => {
+    if (!event.target.matches("[data-panel-choice-search]")) return;
+    const term = event.target.value.trim().toLowerCase();
+    event.target.closest(".panel-choice-menu").querySelectorAll("[data-panel-choice-option]").forEach(item => {
+      item.hidden = !item.textContent.toLowerCase().includes(term);
+    });
+  });
+  document.addEventListener("keydown", event => {
+    const choice = event.target.closest(".panel-choice");
+    if (!choice) return;
+    const menu = choice.querySelector("[data-panel-choice-menu]");
+    const toggle = choice.querySelector("[data-panel-choice-toggle]");
+    if (event.key === "Escape" && !menu.hidden) { close(); toggle.focus(); event.preventDefault(); }
+    if (event.key === "ArrowDown" && event.target === toggle) {
+      if (menu.hidden) toggle.click();
+      menu.querySelector('[aria-selected="true"]')?.focus();
+      event.preventDefault();
+    } else if (["ArrowDown", "ArrowUp"].includes(event.key) && event.target.matches("[data-panel-choice-option]")) {
+      const items = Array.from(menu.querySelectorAll("[data-panel-choice-option]:not([hidden])"));
+      items[(items.indexOf(event.target) + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length]?.focus();
+      event.preventDefault();
+    }
+  });
+})();
 
 // Shared card expansion controls; supports dashboard panels and generated AI cards.
 (function initCardExpansion() {

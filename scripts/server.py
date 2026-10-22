@@ -348,11 +348,10 @@ class UserUpdateRequest(BaseModel):
 
 class ActionPlanRequest(BaseModel):
     action_text: str = Field(min_length=1, max_length=4000)
-    action_owner: str = Field(default="", max_length=200)
+    action_owner_position_code: str = Field(min_length=1, max_length=120)
     due_date: dt.date | None = None
     priority: str = Field(default="Medium", max_length=20)
     status: str = Field(default="Open", max_length=30)
-    recipient_user_ids: list[int] = Field(min_length=1, max_length=200)
 
 
 class ActionPlanResponseRequest(BaseModel):
@@ -1101,70 +1100,65 @@ def admin_data_import(payload: DataImportRequest, request: Request):
     return {"table": table, "rows_inserted": len(values), "columns": ordered_columns}
 
 
-ACTION_PLAN_FIELD_RECIPIENTS = ("SPO", "MIO")
-ACTION_PLAN_MANAGER_RECIPIENTS = ("ASM", "RSM", "DGM", "HOD", "EXEC")
+def can_choose_action_plan_owner(user: dict) -> bool:
+    return str(user.get("role") or "").strip().lower() in {"admin", "exec", "executive"}
 
 
-def action_plan_recipient_scope(user):
-    """Return recipient position codes and allowed designations for the sender."""
-    if user["role"] == "admin":
-        return None, ACTION_PLAN_FIELD_RECIPIENTS, "SPO/MIO"
-    designation = str(user.get("designation") or "").strip().upper()
-    if designation in ACTION_PLAN_FIELD_RECIPIENTS:
-        # A field employee reports upward. Prefer the immediate ASM, while
-        # retaining a manager fallback for branches without an ASM account.
-        rows = query(
-            """SELECT parent.position_code, UPPER(TRIM(parent.designation_name))
-                 FROM staff_master child
-                 JOIN staff_master parent
-                   ON TRIM(parent.position_code) = TRIM(child.report_to_position_code)
-                WHERE TRIM(child.position_code) = %s
-                  AND UPPER(TRIM(parent.designation_name)) = ANY(%s)
-                GROUP BY parent.position_code, parent.designation_name
-                ORDER BY CASE UPPER(TRIM(parent.designation_name))
-                           WHEN 'ASM' THEN 1 WHEN 'RSM' THEN 2 WHEN 'DGM' THEN 3
-                           WHEN 'HOD' THEN 4 WHEN 'EXEC' THEN 5 ELSE 9 END,
-                         parent.position_code""",
-            [user.get("scope_position_code"), list(ACTION_PLAN_MANAGER_RECIPIENTS)],
-            "actions.reporting_manager_positions",
-        )
-        return [row[0] for row in rows], ACTION_PLAN_MANAGER_RECIPIENTS, "reporting manager"
-    return request_scope_positions(), ACTION_PLAN_FIELD_RECIPIENTS, "SPO/MIO"
+def reporting_manager_recipient(user: dict) -> dict:
+    position_code = str(user.get("scope_position_code") or "").strip()
+    if not position_code:
+        raise HTTPException(403, "Your account needs an assigned staff position to send an action plan")
+    rows = query(
+        """SELECT TRIM(parent.position_code), TRIM(parent.employee_name),
+                  TRIM(parent.designation_name)
+           FROM public.staff_master child
+           JOIN public.staff_master parent
+             ON TRIM(parent.position_code) = TRIM(child.report_to_position_code)
+           WHERE TRIM(child.position_code) = %s
+             AND NULLIF(TRIM(parent.employee_name), '') IS NOT NULL
+             AND NULLIF(TRIM(parent.designation_name), '') IS NOT NULL
+           ORDER BY parent.position_code LIMIT 1""",
+        [position_code], "actions.reporting_manager",
+    )
+    if not rows:
+        raise HTTPException(403, "No reporting manager is assigned to your staff position")
+    return {"position_code": rows[0][0], "employee_name": rows[0][1],
+            "designation": rows[0][2]}
+
+
+@app.get("/api/action-plan-recipient")
+def action_plan_recipient(request: Request):
+    user = current_user(request)
+    if can_choose_action_plan_owner(user):
+        raise HTTPException(400, "Use the action owner picker for this account")
+    return {"recipient": reporting_manager_recipient(user)}
 
 
 @app.get("/api/action-plan-recipients")
 def action_plan_recipients(request: Request):
-    user = current_user(request)
-    positions, recipient_designations, recipient_label = action_plan_recipient_scope(user)
-    if positions is None:
-        rows = query(
-            """SELECT DISTINCT ON (u.id) u.id, u.full_name, u.role, u.scope_position_code,
-                      TRIM(s.designation_name), TRIM(s.employee_name)
-               FROM public.dashboard_users u
-               JOIN public.staff_master s
-                 ON TRIM(s.position_code) = TRIM(u.scope_position_code)
-               WHERE u.is_active = TRUE AND u.role <> 'admin'
-                 AND u.scope_position_code IS NOT NULL
-                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)
-               ORDER BY u.id, u.full_name""", [list(recipient_designations)], "actions.recipients_admin",
-        )
-    else:
-        rows = query(
-            """SELECT DISTINCT ON (u.id) u.id, u.full_name, u.role, u.scope_position_code,
-                      TRIM(s.designation_name), TRIM(s.employee_name)
-               FROM public.dashboard_users u
-               JOIN public.staff_master s
-                 ON TRIM(s.position_code) = TRIM(u.scope_position_code)
-               WHERE u.is_active = TRUE AND u.role <> 'admin'
-                 AND u.scope_position_code = ANY(%s)
-                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)
-               ORDER BY u.id, u.full_name""", [positions, list(recipient_designations)], "actions.recipients_scoped",
-        )
+    if not can_choose_action_plan_owner(current_user(request)):
+        raise HTTPException(403, "Only Admin and Executive accounts can choose an action owner")
+    rows = query(
+        """SELECT DISTINCT ON (TRIM(s.position_code))
+                  TRIM(s.position_code), TRIM(s.employee_name), TRIM(s.designation_name), u.id
+           FROM public.staff_master s
+           LEFT JOIN LATERAL (
+             SELECT account.id FROM public.dashboard_users account
+              WHERE account.is_active = TRUE AND account.role <> 'admin'
+                AND TRIM(account.scope_position_code) = TRIM(s.position_code)
+              ORDER BY account.id LIMIT 1
+           ) u ON TRUE
+           WHERE NULLIF(TRIM(s.position_code), '') IS NOT NULL
+             AND NULLIF(TRIM(s.employee_name), '') IS NOT NULL
+             AND NULLIF(TRIM(s.designation_name), '') IS NOT NULL
+           ORDER BY TRIM(s.position_code), TRIM(s.employee_name)""",
+        [], "actions.recipients_staff",
+    )
     return {"recipients": [
-        {"id": row[0], "full_name": row[1], "role": row[2], "position_code": row[3],
-         "designation": row[4], "employee_name": row[5]}
+        {"position_code": row[0], "employee_name": row[1],
+         "designation": row[2], "user_id": row[3]}
         for row in rows
-    ], "recipient_label": recipient_label}
+    ], "recipient_label": "staff"}
 
 
 @app.post("/api/action-plans")
@@ -1176,50 +1170,81 @@ def create_action_plan(payload: ActionPlanRequest, request: Request):
         raise HTTPException(400, "Priority must be High, Medium, or Low")
     if payload.status not in {"Open", "In Progress", "Complete"}:
         raise HTTPException(400, "Status must be Open, In Progress, or Complete")
-    recipient_ids = list(dict.fromkeys(payload.recipient_user_ids))
-    if not recipient_ids:
-        raise HTTPException(400, "Select at least one recipient")
-    positions, recipient_designations, _recipient_label = action_plan_recipient_scope(user)
-    if positions is None:
-        allowed = query(
-            """SELECT DISTINCT u.id FROM public.dashboard_users u
-               JOIN public.staff_master s ON TRIM(s.position_code) = TRIM(u.scope_position_code)
-               WHERE u.id = ANY(%s) AND u.is_active = TRUE AND u.role <> 'admin'
-                 AND u.scope_position_code IS NOT NULL
-                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)""",
-            [recipient_ids, list(recipient_designations)], "actions.validate_recipients_admin",
-        )
-    else:
-        allowed = query(
-            """SELECT DISTINCT u.id FROM public.dashboard_users u
-               JOIN public.staff_master s ON TRIM(s.position_code) = TRIM(u.scope_position_code)
-               WHERE u.id = ANY(%s) AND u.is_active = TRUE AND u.role <> 'admin'
-                 AND u.scope_position_code = ANY(%s)
-                 AND UPPER(TRIM(s.designation_name)) = ANY(%s)""",
-            [recipient_ids, positions, list(recipient_designations)], "actions.validate_recipients_scoped",
-        )
-    allowed_ids = {row[0] for row in allowed}
-    if allowed_ids != set(recipient_ids):
-        raise HTTPException(403, "One or more selected recipients are outside your reporting hierarchy")
+    owner_code = payload.action_owner_position_code.strip()
+    if not can_choose_action_plan_owner(user):
+        manager = reporting_manager_recipient(user)
+        if owner_code != manager["position_code"]:
+            raise HTTPException(403, "Action plans from this account must go to its reporting manager")
+    allowed = query(
+        """SELECT TRIM(s.employee_name)
+           FROM public.staff_master s
+           WHERE TRIM(s.position_code) = %s
+             AND NULLIF(TRIM(s.employee_name), '') IS NOT NULL
+             AND NULLIF(TRIM(s.designation_name), '') IS NOT NULL
+           ORDER BY s.employee_name LIMIT 1""",
+        [owner_code], "actions.validate_owner",
+    )
+    if not allowed:
+        raise HTTPException(400, "Selected action owner is not a valid staff position")
+    owner_name = allowed[0][0]
     rows = execute_transaction(
         """WITH new_plan AS (
              INSERT INTO public.dashboard_action_plans
-               (created_by_user_id, action_text, action_owner, due_date, priority, status)
-             VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+               (created_by_user_id, action_text, action_owner, action_owner_position_code,
+                due_date, priority, status)
+             VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+           ), queued AS (
+             INSERT INTO public.dashboard_action_plan_positions (action_plan_id, position_code)
+             SELECT new_plan.id, %s FROM new_plan
+             RETURNING action_plan_id
+           ), notified AS (
+             INSERT INTO public.dashboard_action_plan_recipients (action_plan_id, recipient_user_id)
+             SELECT queued.action_plan_id, account.id FROM queued
+             JOIN public.dashboard_users account
+               ON TRIM(account.scope_position_code) = %s
+              AND account.is_active = TRUE AND account.role <> 'admin'
+             ON CONFLICT (action_plan_id, recipient_user_id) DO NOTHING
+             RETURNING recipient_user_id
            )
-           INSERT INTO public.dashboard_action_plan_recipients (action_plan_id, recipient_user_id)
-           SELECT new_plan.id, selected.recipient_id
-           FROM new_plan CROSS JOIN unnest(%s::bigint[]) AS selected(recipient_id)
-           RETURNING action_plan_id""",
-        [user["id"], payload.action_text.strip(), payload.action_owner.strip(), payload.due_date,
-         payload.priority, payload.status, recipient_ids], "actions.create_plan",
+           SELECT new_plan.id, (SELECT COUNT(*) FROM notified) FROM new_plan""",
+        [user["id"], payload.action_text.strip(), owner_name, owner_code, payload.due_date,
+         payload.priority, payload.status, owner_code, owner_code], "actions.create_plan",
     )
-    return {"ok": True, "action_plan_id": rows[0][0], "recipients": len(recipient_ids)}
+    return {"ok": True, "action_plan_id": rows[0][0], "recipients": rows[0][1],
+            "queued": rows[0][1] == 0}
+
+
+def deliver_queued_action_plans(user):
+    """Deliver position-addressed messages when a staff account becomes available."""
+    position_code = str(user.get("scope_position_code") or "").strip()
+    if not position_code or user.get("role") == "admin":
+        return
+    pending = query(
+        """SELECT 1 FROM public.dashboard_action_plan_positions p
+            WHERE p.position_code = %s
+              AND NOT EXISTS (
+                SELECT 1 FROM public.dashboard_action_plan_recipients r
+                 WHERE r.action_plan_id = p.action_plan_id AND r.recipient_user_id = %s
+              ) LIMIT 1""",
+        [position_code, user["id"]], "actions.pending_delivery",
+    )
+    if not pending:
+        return
+    execute_transaction(
+        """INSERT INTO public.dashboard_action_plan_recipients (action_plan_id, recipient_user_id)
+           SELECT pending.action_plan_id, %s
+             FROM public.dashboard_action_plan_positions pending
+            WHERE pending.position_code = %s
+           ON CONFLICT (action_plan_id, recipient_user_id) DO NOTHING
+           RETURNING action_plan_id""",
+        [user["id"], position_code], "actions.deliver_queued",
+    )
 
 
 @app.get("/api/notifications")
 def get_notifications(request: Request):
     user = current_user(request)
+    deliver_queued_action_plans(user)
     rows = query(
         """SELECT n.id, n.read_at, n.created_at, p.id, p.action_text, p.action_owner,
                   p.due_date, p.priority, p.status, creator.full_name,
@@ -1255,11 +1280,8 @@ def get_notifications(request: Request):
 
 @app.post("/api/action-plans/{action_plan_id}/responses")
 def respond_to_action_plan(action_plan_id: int, payload: ActionPlanResponseRequest, request: Request):
-    """Let a field employee acknowledge an assigned action and notify its owner."""
+    """Let an assigned employee acknowledge an action and notify its sender."""
     user = current_user(request)
-    designation = str(user.get("designation") or "").strip().upper()
-    if designation not in {"SPO", "MIO"}:
-        raise HTTPException(403, "Only SPO/MIO users can send action-plan responses")
     response_text = payload.response_text.strip()
     if not response_text:
         raise HTTPException(400, "Response message is required")
@@ -1958,8 +1980,8 @@ def _kpis_uncached(
       SELECT group_on, product_name, actual_net_sales, target_net_sales,
              discount_product_name, tp_value, net_value, discount_value
       FROM ranked_products
-      WHERE achievement_bottom_rank <= 10 OR achievement_top_rank <= 10
-         OR discount_bottom_rank <= 10 OR discount_top_rank <= 10
+      WHERE achievement_bottom_rank <= 25 OR achievement_top_rank <= 25
+         OR discount_bottom_rank <= 25 OR discount_top_rank <= 25
       ORDER BY actual_net_sales DESC NULLS LAST""",
       cte_params + [sales_month, fy]) if fy == TARGET_FY else []
     product_performance = [
@@ -1972,9 +1994,9 @@ def _kpis_uncached(
         (r for r in product_performance if r["achievement_pct"] is not None),
         key=lambda r: r["achievement_pct"],
     )
-    # The UI offers Top 10 / Bottom 10 only; cap the payload to both sets.
+    # Keep the top and bottom 25 available for the dashboard rankings.
     product_performance = list({
-        r["group_on"]: r for r in ranked_products[:10] + ranked_products[-10:]
+        r["group_on"]: r for r in ranked_products[:25] + ranked_products[-25:]
     }.values())
 
     # Product-level discount is the same basis as the headline discount KPI:
@@ -2013,7 +2035,7 @@ def _kpis_uncached(
         key=lambda r: r["discount_pct"],
     )
     discount_products = list({
-        r["group_on"]: r for r in ranked_discount_products[:10] + ranked_discount_products[-10:]
+        r["group_on"]: r for r in ranked_discount_products[:25] + ranked_discount_products[-25:]
     }.values())
     # These panels are scope-based and should also work for ALL/management
     # views, not only when an individual SPO or MIO designation is selected.
@@ -2033,15 +2055,15 @@ def _kpis_uncached(
                 ROW_NUMBER() OVER (ORDER BY net_sales ASC) AS bottom_rank
       FROM customer_sales)
       SELECT cust_name, cust_number, net_sales, top_rank, bottom_rank
-      FROM ranked_customers WHERE top_rank <= 10 OR bottom_rank <= 10
+      FROM ranked_customers WHERE top_rank <= 25 OR bottom_rank <= 25
       ORDER BY net_sales DESC""", cte_params + [sales_month, fy])
     spo_sections["top_customers"] = [
         {"cust_name": r[0], "cust_number": r[1], "net_sales": float(r[2] or 0)}
-        for r in customer_rows if r[3] <= 10
+        for r in customer_rows if r[3] <= 25
     ]
     spo_sections["bottom_customers"] = sorted([
         {"cust_name": r[0], "cust_number": r[1], "net_sales": float(r[2] or 0)}
-        for r in customer_rows if r[4] <= 10
+        for r in customer_rows if r[4] <= 25
     ], key=lambda r: r["net_sales"])
     # A customer's percentage is its share of positive sales. Customer-level
     # targets do not exist, so this is never called target achievement.
@@ -2259,8 +2281,8 @@ def _kpis_uncached(
         SELECT position_code, employee_name, designation_name, actual, target,
                total_count, active_count
         FROM ranked
-        WHERE role_bottom_rank <= 10 OR role_top_rank <= 10
-           OR all_bottom_rank <= 10 OR all_top_rank <= 10
+        WHERE role_bottom_rank <= 25 OR role_top_rank <= 25
+           OR all_bottom_rank <= 25 OR all_top_rank <= 25
         ORDER BY position_code""",
           cte_params + [list(manager_roles[designation]), sales_month, fy])
         hierarchy_total = int(team_rows[0][5] or 0) if team_rows else 0

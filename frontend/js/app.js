@@ -140,6 +140,7 @@
     const paint = () => {
       $("kpiRow").innerHTML = cfg.kpis.map(renderKpi).join("");
       $("panelGrid").innerHTML = cfg.panels.map(renderPanel).join("");
+      window.enhancePanelChoices?.();
       bindInteractions();
       dash.classList.remove("swap-out");
       dash.classList.add("swap-in");
