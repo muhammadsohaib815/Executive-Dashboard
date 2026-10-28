@@ -107,6 +107,7 @@
     period: periodMode,
     value_metric: valueMetric
   });
+  window.getDashboardChatFilters = () => ({ ...current() });
   const qs = o => new URLSearchParams(o).toString();
 
   function fillSelectOptions(el, values, selected, field, search = "") {

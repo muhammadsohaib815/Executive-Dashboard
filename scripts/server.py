@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 import threading
@@ -48,6 +49,9 @@ from scripts.performance_monitor import (
     query_identifier, run_query,
 )
 from scripts.response_cache import TTLResponseCache
+from scripts.services.sales_chat import (
+    ChatPlanningError, UnsupportedQuestion, compile_query, format_answer, plan_question,
+)
 
 FRONTEND_DIR = ROOT / "frontend"
 ASSETS_DIR = ROOT / "assets"
@@ -67,6 +71,14 @@ def load_env(path: Path) -> dict:
 
 
 ENV = load_env(ROOT / ".env")
+
+
+def chat_config(name: str) -> str:
+    """Read a chat setting, tolerating optional quotes around .env values."""
+    value = (os.getenv(name) or ENV.get(name) or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 LOGGER = logging.getLogger("executive_dashboard.auth")
 AUTH_COOKIE_NAME = "dashboard_session"
@@ -375,6 +387,11 @@ class NotificationReadRequest(BaseModel):
 class DataImportRequest(BaseModel):
     table: str = Field(min_length=1, max_length=80)
     rows: list[dict[str, object]] = Field(min_length=1, max_length=2000)
+
+
+class SalesChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    filters: dict[str, str] = Field(default_factory=dict)
 
 
 def submit_query(executor, query_id, sql, params):
@@ -2749,6 +2766,56 @@ def ai_insights(
         return result
 
     return cached_response(generation, key, compute)
+
+
+@app.post("/api/sales-chat")
+def sales_chat(payload: SalesChatRequest):
+    """Plan and run a scoped, read-only sales query for the signed-in user."""
+    allowed = ("designation", "region", "zone", "subzone", "territory", "employee",
+               "team", "month", "fy", "period")
+    filters = {key: str(payload.filters.get(key) or "").strip() for key in allowed}
+    if any(len(value) > 120 for value in filters.values()):
+        raise HTTPException(400, "A filter value is too long")
+    filters["designation"] = filters["designation"] or "HOD"
+    for key in ("region", "zone", "subzone", "territory", "employee"):
+        filters[key] = filters[key] or "All"
+    filters["team"] = (filters["team"] or "COMBINED").upper()
+    filters["fy"] = filters["fy"] or TARGET_FY
+    filters["period"] = (filters["period"] or "MTD").upper()
+    if filters["team"] not in {"COMBINED", "FMCG", "PHARMA"}:
+        raise HTTPException(400, "invalid team")
+    if filters["period"] not in {"MTD", "YTD"}:
+        raise HTTPException(400, "period must be MTD or YTD")
+    try:
+        parsed_month = dt.datetime.strptime(filters["month"], "%b-%Y")
+        if parsed_month.strftime("%b-%Y") != filters["month"]:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(400, "month must look like Jul-2026")
+
+    api_key = chat_config("GEMINI_API_KEY")
+    model = chat_config("GEMINI_MODEL") or "gemini-3.6-flash"
+    try:
+        plan = plan_question(payload.question, filters, api_key, model)
+        generation = dashboard_data_generation()
+        positions = cached_authorized_positions(
+            generation, filters["designation"], filters["region"], filters["zone"],
+            filters["subzone"], filters["territory"], filters["employee"], filters["team"],
+        )
+        if not positions:
+            return {"answer": "No sales positions are available for the selected scope.",
+                    "source": "Sales SQL", "scope": filters["month"]}
+        sql, params, months, _ = compile_query(plan, filters, positions, team_predicate)
+        rows = query(sql, params, "sales_chat.text_sql")
+        answer, scope = format_answer(plan, filters, rows, months)
+        return {"answer": answer, "source": "Sales SQL", "scope": scope,
+                "sql": sql, "query": {"measure": plan["measure"], "comparison": plan["comparison"],
+                "dimension": plan["dimension"], "months": months,
+                "authorized_positions": len(positions), "row_count": len(rows)}}
+    except UnsupportedQuestion as exc:
+        return {"answer": str(exc), "source": "Sales SQL", "scope": filters["month"]}
+    except ChatPlanningError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.get("/")

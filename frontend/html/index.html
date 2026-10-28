@@ -8,7 +8,8 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261022-7" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261028-1" />
+  <link rel="stylesheet" href="/css/sales-chat.css?v=20261028-2" />
 </head>
 <body class="executive-page">
   <div class="app executive-dashboard" id="app" data-designation="HOD">
@@ -167,13 +168,38 @@
 
     <section class="ai" id="aiInsights" aria-label="AI Performance Analysis"></section>
 
+    <section class="sales-chat" id="salesChat" aria-labelledby="salesChatTitle">
+      <header class="sales-chat-head">
+        <div class="sales-chat-heading"><span class="sales-chat-icon" aria-hidden="true">✦</span><div><h2 id="salesChatTitle">SALES ANALYST CHAT</h2><p>Questions translated into scoped SQL queries</p></div></div>
+        <span class="sales-chat-context" id="salesChatContext">Waiting for dashboard data</span>
+      </header>
+      <div class="sales-chat-body">
+        <div class="sales-chat-messages" id="salesChatMessages" role="log" aria-live="polite" aria-label="Sales analyst conversation">
+          <div class="sales-chat-message assistant"><span class="sales-chat-speaker">Sales Analyst</span><p>Ask about sales, targets, products, employees, customers, discounts, or regions. I turn your question into a read-only SQL query using the dashboard's applied filters.</p></div>
+        </div>
+        <div class="sales-chat-prompts" id="salesChatPrompts" aria-label="Suggested questions">
+          <button type="button">How are net sales against target?</button>
+          <button type="button">Which 5 products have the largest sales gap?</button>
+          <button type="button">Show net sales by region</button>
+          <button type="button">Is discount above budget?</button>
+        </div>
+        <form class="sales-chat-form" id="salesChatForm">
+          <label class="sr-only" for="salesChatQuestion">Ask the Sales Analyst</label>
+          <input id="salesChatQuestion" name="question" type="text" maxlength="500" autocomplete="off" placeholder="Ask a question about this dashboard..." required />
+          <button id="salesChatSend" type="submit">Send</button>
+        </form>
+        <p class="sales-chat-note">Read-only SQL. Answers use your dashboard access and show the query used.</p>
+      </div>
+    </section>
+
   </div>
 
   <script src="/js/config.js?v=20261022-2"></script>
   <script src="/js/components.js?v=20261022-3"></script>
-  <script src="/js/api.js?v=20261022-10"></script>
+  <script src="/js/api.js?v=20261028-1"></script>
   <script src="/js/app.js?v=20261022-1"></script>
   <script src="/js/ai-insights.js?v=20261021-1"></script>
+  <script src="/js/sales-chat.js?v=20261028-2"></script>
   <script src="/js/auth.js?v=20261022-1"></script>
 </body>
 </html>
