@@ -49,11 +49,64 @@
     return points;
   };
   const chevronSvg = '<span class="ai-diagnosis-arrow" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M3 5.25L7 9.25L11 5.25" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+  const glanceRow = (label, value, detail, tone = '') => `<tr class="${tone}"><th scope="row">${esc(label)}</th><td><strong>${esc(value)}</strong><small>${esc(detail)}</small></td></tr>`;
+  const atGlanceHtml = row => {
+    const band = performanceBand(row.achievement_pct);
+    const actual = Number(row.actual || 0);
+    const target = Number(row.target || 0);
+    const difference = actual - target;
+    const hasPrior = row.previous_sales != null && Number(row.previous_sales) > 0;
+    const prior = hasPrior ? Number(row.previous_sales) : 0;
+    const diagnosis = row.diagnosis || {};
+    const bridge = diagnosis.bridge;
+    const rows = [glanceRow(
+      difference > 0 ? 'Above target' : difference === 0 ? 'At target' : band === 'low' ? 'Recovery gap' : 'Gap to target',
+      amount(Math.abs(difference)),
+      `${percent(row.achievement_pct)} achieved · ${amount(actual)} sales / ${amount(target)} target`,
+      band === 'high' ? 'good' : band === 'average' ? 'warn' : 'bad'
+    )];
+    rows.push(hasPrior ? glanceRow(
+      'Vs last month',
+      `${actual >= prior ? '+' : '−'}${amount(Math.abs(actual - prior))}`,
+      `${signedPercent(row.golm_pct)} · previous ${amount(prior)}`,
+      actual >= prior ? 'good' : 'bad'
+    ) : glanceRow('Vs last month', 'N/A', 'No previous month sales for a reliable comparison'));
+    if (bridge) {
+      const gains = Math.max(0, Number(bridge.new || 0)) + Math.max(0, Number(bridge.grew || 0));
+      const losses = Math.abs(Number(bridge.lost || 0)) + Math.abs(Number(bridge.reduced || 0));
+      rows.push(glanceRow(
+        'Customer movement',
+        `${gains >= losses ? '+' : '−'}${amount(Math.abs(gains - losses))}`,
+        `${amount(gains)} gained · ${amount(losses)} lost from matched buyers`,
+        gains >= losses ? 'good' : 'bad'
+      ));
+    } else {
+      const ucc = Number(row.total_ucc || 0);
+      rows.push(glanceRow('Customer reach', `${ucc.toLocaleString('en-PK')} UCC`, ucc ? 'Matched active buying customers in this scope' : 'No matched customer records in this scope'));
+    }
+    const focus = band === 'high'
+      ? (diagnosis.watch || [])[0] || (diagnosis.strengths || [])[0]
+      : (diagnosis.blockers || [])[0] || (diagnosis.strengths || [])[0];
+    const isWatchFocus = band === 'high' && ((diagnosis.watch || []).length > 0 || (!focus && Number(row.discount_variance_pp) > 2));
+    const focusLabel = band === 'high' ? (isWatchFocus ? 'Watch next' : 'Protect this driver')
+      : band === 'average' ? 'Close the gap' : 'Recovery priority';
+    const fallbackFocus = Number(row.discount_variance_pp) > 2 ? 'Discount above budget'
+      : row.golm_pct != null && Number(row.golm_pct) < 0 ? 'Sales declined vs last month'
+      : difference < 0 ? 'Close target shortfall' : 'Maintain current result';
+    rows.push(glanceRow(
+      focusLabel,
+      focus?.title || fallbackFocus,
+      focus?.detail || row.ai_insight || 'Use the indicators below to review this result.',
+      isWatchFocus ? 'warn' : band === 'high' ? 'good' : band === 'average' ? 'warn' : 'bad'
+    ));
+    return `<details class="ai-glance"><summary><b>AT A GLANCE</b><span>Click to open quick table</span><span class="ai-glance-arrow" aria-hidden="true">⌄</span></summary><div class="ai-glance-table-wrap"><table aria-label="At a glance performance facts"><tbody>${rows.join('')}</tbody></table></div></details>`;
+  };
   const kpHtml = row => `<div class="ai-card-diagnosis ai-card-keypoints">
     <button type="button" class="ai-diagnosis-head neutral" aria-expanded="false" title="Click to show/hide details">
       <div class="ai-diagnosis-head-text"><b>KEY POINTS</b><span>Product performance indicators</span></div>
       ${chevronSvg}
     </button>
+    ${atGlanceHtml(row)}
     <div class="ai-diagnosis-body" hidden>
       <ul>${keyPoints(row).map(point => `<li>${esc(point)}</li>`).join('')}</ul>
     </div>
@@ -96,6 +149,7 @@
         </div>
         ${chevronSvg}
       </button>
+      ${atGlanceHtml(row)}
       <div class="ai-diagnosis-body" hidden>
         ${sections.join('')}
       </div>
