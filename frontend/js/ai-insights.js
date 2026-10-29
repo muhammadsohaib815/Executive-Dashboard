@@ -51,6 +51,9 @@
   const chevronSvg = '<span class="ai-diagnosis-arrow" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M3 5.25L7 9.25L11 5.25" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
   const glanceRow = (label, value, detail, tone = '') => `<tr class="${tone}"><th scope="row">${esc(label)}</th><td><strong>${esc(value)}</strong><small>${esc(detail)}</small></td></tr>`;
   const atGlanceHtml = row => {
+    const isProduct = row.product_id != null && row.employee_id == null;
+    const entity = isProduct ? 'product' : 'employee';
+    const entityId = isProduct ? row.product_id : (row.position_code || row.employee_id);
     const band = performanceBand(row.achievement_pct);
     const actual = Number(row.actual || 0);
     const target = Number(row.target || 0);
@@ -99,8 +102,84 @@
       focus?.detail || row.ai_insight || 'Use the indicators below to review this result.',
       isWatchFocus ? 'warn' : band === 'high' ? 'good' : band === 'average' ? 'warn' : 'bad'
     ));
-    return `<details class="ai-glance"><summary><b>AT A GLANCE</b><span>Click to open quick table</span><span class="ai-glance-arrow" aria-hidden="true">⌄</span></summary><div class="ai-glance-table-wrap"><table aria-label="At a glance performance facts"><tbody>${rows.join('')}</tbody></table></div></details>`;
+    const performanceLabel = isProduct ? 'Positions' : 'Products';
+    return `<details class="ai-glance" data-quick-entity="${entity}" data-quick-id="${esc(entityId || '')}"><summary><b>AT A GLANCE</b><span>Open SQL quick analysis</span><span class="ai-glance-arrow" aria-hidden="true">⌄</span></summary>
+      <div class="ai-glance-table-wrap"><table aria-label="At a glance performance facts"><tbody>${rows.join('')}</tbody></table></div>
+      <section class="ai-quick-analysis" aria-label="Database quick analysis">
+        <div class="ai-quick-toolbar">
+          <label>SQL topic<select data-quick-topic><option value="performance">${performanceLabel}</option><option value="customers">Customers</option><option value="trend">Monthly trend</option><option value="discounts">Discount &amp; returns</option></select></label>
+          <button type="button" data-quick-refresh>Run SQL</button>
+          <button type="button" data-quick-csv disabled>Download CSV</button>
+        </div>
+        <div class="ai-quick-result" data-quick-result><p>Open this section to query the database.</p></div>
+        <details class="ai-quick-sql" data-quick-sql hidden><summary>View SQL query</summary><pre></pre><div data-quick-parameters></div></details>
+      </section>
+    </details>`;
   };
+
+  const quickValue = value => {
+    if (value == null || value === '') return '—';
+    if (typeof value === 'number') return value.toLocaleString('en-PK', { maximumFractionDigits: 2 });
+    return String(value);
+  };
+  const quickTableHtml = data => {
+    const columns = Array.isArray(data.columns) ? data.columns : [];
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!rows.length) return `<p>No database rows matched this topic and scope.</p>`;
+    return `<div class="ai-quick-table-scroll"><table aria-label="${esc(data.title || 'Quick analysis')}"><thead><tr>${columns.map(column => `<th>${esc(column)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(value => `<td>${esc(quickValue(value))}</td>`).join('')}</tr>`).join('')}</tbody></table></div><small>${rows.length} row${rows.length === 1 ? '' : 's'} returned · limit ${esc(data.row_limit || 20)}</small>`;
+  };
+  async function loadQuickAnalysis(glance) {
+    if (!glance || glance.dataset.quickLoading === 'true') return;
+    const resultBox = glance.querySelector('[data-quick-result]');
+    const sqlBox = glance.querySelector('[data-quick-sql]');
+    const csvButton = glance.querySelector('[data-quick-csv]');
+    const topic = glance.querySelector('[data-quick-topic]')?.value || 'performance';
+    const entityId = glance.dataset.quickId || '';
+    if (!entityId) {
+      if (resultBox) resultBox.innerHTML = '<p>Card identifier is unavailable for this query.</p>';
+      return;
+    }
+    glance.dataset.quickLoading = 'true';
+    if (resultBox) resultBox.innerHTML = '<p>Running read-only SQL query…</p>';
+    if (csvButton) csvButton.disabled = true;
+    try {
+      const params = new URLSearchParams({
+        entity: glance.dataset.quickEntity || 'employee', entity_id: entityId, topic,
+        designation: state.designation, month: state.month, fy: state.fy, team: 'COMBINED'
+      });
+      const data = await getJSON('/api/ai-quick-analysis?' + params);
+      glance._quickData = data;
+      glance.dataset.quickTopicLoaded = topic;
+      if (resultBox) resultBox.innerHTML = `<h4>${esc(data.title)}</h4>${quickTableHtml(data)}`;
+      if (csvButton) csvButton.disabled = !data.rows?.length;
+      if (sqlBox) {
+        sqlBox.hidden = false;
+        const pre = sqlBox.querySelector('pre');
+        const parameters = sqlBox.querySelector('[data-quick-parameters]');
+        if (pre) pre.textContent = data.sql || '';
+        if (parameters) parameters.textContent = 'Parameters: ' + Object.entries(data.parameters || {}).map(([key, value]) => `${key}=${value}`).join(' · ');
+      }
+    } catch (error) {
+      glance._quickData = null;
+      if (resultBox) resultBox.innerHTML = `<p>Could not run the SQL query: ${esc(error.message)}</p>`;
+    } finally {
+      glance.dataset.quickLoading = 'false';
+    }
+  }
+  function downloadQuickCsv(glance) {
+    const data = glance?._quickData;
+    if (!data?.rows?.length) return;
+    const csvCell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const csv = [data.columns, ...data.rows].map(row => row.map(csvCell).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `quick-analysis-${data.entity}-${data.topic}-${state.month}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
   const kpHtml = row => `<div class="ai-card-diagnosis ai-card-keypoints">
     <button type="button" class="ai-diagnosis-head neutral" aria-expanded="false" title="Click to show/hide details">
       <div class="ai-diagnosis-head-text"><b>KEY POINTS</b><span>Product performance indicators</span></div>
@@ -408,6 +487,16 @@
   }
 
   root.addEventListener('click', event => {
+    const quickRefresh = event.target.closest('[data-quick-refresh]');
+    if (quickRefresh) {
+      loadQuickAnalysis(quickRefresh.closest('.ai-glance'));
+      return;
+    }
+    const quickCsv = event.target.closest('[data-quick-csv]');
+    if (quickCsv) {
+      downloadQuickCsv(quickCsv.closest('.ai-glance'));
+      return;
+    }
     const toggle = event.target.closest('.ai-diagnosis-head');
     if (!toggle) return;
     const diag = toggle.closest('.ai-card-diagnosis');
@@ -419,6 +508,18 @@
     diag.classList.toggle('is-open', willOpen);
     toggle.setAttribute('aria-expanded', String(willOpen));
   });
+
+  root.addEventListener('change', event => {
+    if (!event.target.matches('[data-quick-topic]')) return;
+    loadQuickAnalysis(event.target.closest('.ai-glance'));
+  });
+
+  root.addEventListener('toggle', event => {
+    const glance = event.target.closest?.('.ai-glance');
+    if (!glance || !glance.open) return;
+    const topic = glance.querySelector('[data-quick-topic]')?.value || 'performance';
+    if (glance.dataset.quickTopicLoaded !== topic) loadQuickAnalysis(glance);
+  }, true);
 
   // auth.js loads after this module.  Reconcile the AI selector as soon as
   // the authenticated account is known, so a direct SPO/MIO account cannot

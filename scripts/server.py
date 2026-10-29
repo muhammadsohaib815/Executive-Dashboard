@@ -2723,6 +2723,172 @@ def ai_insights(
     return cached_response(generation, key, compute)
 
 
+@app.get("/api/ai-quick-analysis")
+def ai_quick_analysis(
+    entity: str = Query(..., pattern="^(employee|product)$"),
+    entity_id: str = Query(..., min_length=1, max_length=160),
+    topic: str = Query("performance", pattern="^(performance|customers|trend|discounts)$"),
+    designation: str = "ALL", month: str = Query(...), fy: str = TARGET_FY,
+    team: str = "COMBINED",
+):
+    """Run a fixed, read-only SQL extract for one AI performance card."""
+    team = team.upper()
+    if team not in {"COMBINED", "FMCG", "PHARMA"}:
+        raise HTTPException(400, "invalid team")
+    check_designation(designation)
+    try:
+        selected_date = dt.datetime.strptime(month, "%b-%Y")
+    except ValueError:
+        raise HTTPException(400, "month must look like Jul-2026")
+    suffix = selected_date.strftime("%b_%y").lower()
+    reporting_month = selected_date.strftime("%B,%y")
+    previous_date = selected_date.replace(day=1) - dt.timedelta(days=1)
+    previous_month = previous_date.strftime("%B,%y")
+    entity_id = entity_id.strip()
+
+    generation = dashboard_data_generation()
+    authorized = cached_authorized_positions(
+        generation, designation, "All", "All", "All", "All", "All", team,
+    )
+    if entity == "employee":
+        if entity_id not in authorized:
+            raise HTTPException(403, "This position is outside the selected reporting scope")
+        tree = set(resolve_reporting_tree(entity_id))
+        positions = [position for position in authorized if position in tree]
+    else:
+        positions = list(authorized)
+    if not positions:
+        raise HTTPException(404, "No authorized positions are available for this analysis")
+
+    sales_team = team_predicate("s.team", team)
+    target_team = team_predicate("t.team", team)
+    product_filter = "AND s.product_no = %s" if entity == "product" else ""
+    product_params = [entity_id] if entity == "product" else []
+    if topic == "performance" and entity == "employee":
+        sql = f"""WITH actual AS (
+          SELECT s.product_no, MAX(s.prd_name) AS product, MAX(s.group_on) AS product_group,
+                 SUM(COALESCE(s.net_sale_value,0)) AS net_sales,
+                 SUM(COALESCE(s.tp_sale_value,0)) AS tp_value,
+                 SUM(ABS(COALESCE(s.net_sale_value,0))) FILTER (WHERE s.net_sale_value < 0) AS returns,
+                 SUM(COALESCE(s.discounts,0)) AS discount
+          FROM public.sales_data s
+          WHERE s.position_code = ANY(%s) AND s.reporting_month = %s AND s.fiscal_year = %s
+            AND {sales_team}
+          GROUP BY s.product_no
+        ), targets AS (
+          SELECT t.product_no, MAX(t.product_group_on_master) AS product_group,
+                 SUM(COALESCE(t.tgt_net_w_reg_{suffix},0)) AS target
+          FROM public.target_data t
+          WHERE t.position_code_2026_27 = ANY(%s) AND {target_team}
+          GROUP BY t.product_no
+        )
+        SELECT COALESCE(a.product_no,t.product_no), COALESCE(a.product,a.product_no,t.product_no),
+               COALESCE(a.product_group,t.product_group), ROUND(COALESCE(a.net_sales,0),2),
+               ROUND(COALESCE(t.target,0),2),
+               ROUND(COALESCE(a.net_sales,0)/NULLIF(t.target,0)*100,1),
+               ROUND(COALESCE(t.target,0)-COALESCE(a.net_sales,0),2),
+               ROUND(COALESCE(a.tp_value,0),2), ROUND(COALESCE(a.discount,0),2),
+               ROUND(COALESCE(a.returns,0),2)
+        FROM actual a FULL JOIN targets t USING(product_no)
+        ORDER BY ABS(COALESCE(t.target,0)-COALESCE(a.net_sales,0)) DESC NULLS LAST
+        LIMIT 20"""
+        params = [positions, reporting_month, fy, positions]
+        columns = ["Product Code", "Product", "Product Group", "Net Sales", "Target", "Achievement %", "Gap", "TP Value", "Discount", "Returns"]
+        label = "Product performance"
+    elif topic == "performance":
+        sql = f"""WITH actual AS (
+          SELECT s.position_code, SUM(COALESCE(s.net_sale_value,0)) AS net_sales,
+                 SUM(COALESCE(s.tp_sale_value,0)) AS tp_value,
+                 COUNT(DISTINCT s.cust_number) FILTER (WHERE s.net_sale_value > 0) AS ucc
+          FROM public.sales_data s
+          WHERE s.position_code = ANY(%s) AND s.reporting_month = %s AND s.fiscal_year = %s
+            AND s.product_no = %s AND {sales_team}
+          GROUP BY s.position_code
+        ), targets AS (
+          SELECT t.position_code_2026_27 AS position_code,
+                 SUM(COALESCE(t.tgt_net_w_reg_{suffix},0)) AS target
+          FROM public.target_data t
+          WHERE t.position_code_2026_27 = ANY(%s) AND t.product_no = %s AND {target_team}
+          GROUP BY t.position_code_2026_27
+        )
+        SELECT COALESCE(a.position_code,t.position_code), MAX(m.employee_name), MAX(m.designation_name),
+               MAX(m.dept_territory_code), MAX(m.region_name), ROUND(COALESCE(a.net_sales,0),2),
+               ROUND(COALESCE(t.target,0),2),
+               ROUND(COALESCE(a.net_sales,0)/NULLIF(t.target,0)*100,1),
+               ROUND(COALESCE(t.target,0)-COALESCE(a.net_sales,0),2), COALESCE(a.ucc,0)
+        FROM actual a FULL JOIN targets t USING(position_code)
+        LEFT JOIN public.staff_master m ON m.position_code=COALESCE(a.position_code,t.position_code)
+        GROUP BY a.position_code,t.position_code,a.net_sales,t.target,a.ucc
+        ORDER BY ABS(COALESCE(t.target,0)-COALESCE(a.net_sales,0)) DESC NULLS LAST
+        LIMIT 20"""
+        params = [positions, reporting_month, fy, entity_id, positions, entity_id]
+        columns = ["Position Code", "Employee", "Designation", "Territory", "Region", "Net Sales", "Target", "Achievement %", "Gap", "UCC"]
+        label = "Position performance"
+    elif topic == "customers":
+        sql = f"""SELECT s.cust_number, MAX(s.cust_name) AS customer,
+               ROUND(SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s),2) AS current_sales,
+               ROUND(SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s),2) AS previous_sales,
+               ROUND(SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s)
+                   - SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s),2) AS change
+        FROM public.sales_data s
+        WHERE s.position_code = ANY(%s) AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
+          {product_filter} AND {sales_team}
+        GROUP BY s.cust_number
+        HAVING SUM(ABS(COALESCE(s.net_sale_value,0))) > 0
+        ORDER BY ABS(SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s)
+                   - SUM(COALESCE(s.net_sale_value,0)) FILTER (WHERE s.reporting_month=%s)) DESC NULLS LAST
+        LIMIT 20"""
+        params = [reporting_month, previous_month, reporting_month, previous_month,
+                  positions, [reporting_month, previous_month], fy] + product_params + [reporting_month, previous_month]
+        columns = ["Customer Code", "Customer", "Current Sales", "Previous Sales", "Change"]
+        label = "Customer movement"
+    elif topic == "trend":
+        sql = f"""SELECT s.reporting_month,
+               ROUND(SUM(COALESCE(s.net_sale_value,0)),2) AS net_sales,
+               ROUND(SUM(COALESCE(s.tp_sale_value,0)),2) AS tp_value,
+               ROUND(SUM(COALESCE(s.discounts,0)),2) AS discount,
+               COUNT(DISTINCT s.cust_number) FILTER (WHERE s.net_sale_value > 0) AS ucc,
+               COUNT(DISTINCT s.position_code) FILTER (WHERE s.net_sale_value > 0) AS active_positions
+        FROM public.sales_data s
+        WHERE s.position_code = ANY(%s) AND s.fiscal_year = %s
+          AND TO_DATE(s.reporting_month,'FMMonth,YY') <= %s::date
+          {product_filter} AND {sales_team}
+        GROUP BY s.reporting_month
+        ORDER BY TO_DATE(s.reporting_month,'FMMonth,YY') DESC
+        LIMIT 20"""
+        params = [positions, fy, selected_date.date()] + product_params
+        columns = ["Reporting Month", "Net Sales", "TP Value", "Discount", "UCC", "Active Positions"]
+        label = "Monthly trend"
+    else:
+        group_column = "s.position_code" if entity == "product" else "s.product_no"
+        name_column = "MAX(m.employee_name)" if entity == "product" else "MAX(s.prd_name)"
+        join_staff = "LEFT JOIN public.staff_master m ON m.position_code=s.position_code" if entity == "product" else ""
+        sql = f"""SELECT {group_column}, {name_column},
+               ROUND(SUM(COALESCE(s.tp_sale_value,0)),2) AS tp_value,
+               ROUND(SUM(COALESCE(s.discounts,0)),2) AS discount,
+               ROUND(SUM(COALESCE(s.discounts,0))/NULLIF(SUM(COALESCE(s.tp_sale_value,0)),0)*100,1) AS discount_pct,
+               ROUND(SUM(ABS(COALESCE(s.net_sale_value,0))) FILTER (WHERE s.net_sale_value < 0),2) AS returns,
+               ROUND(SUM(COALESCE(s.net_sale_value,0)),2) AS net_sales
+        FROM public.sales_data s {join_staff}
+        WHERE s.position_code = ANY(%s) AND s.reporting_month = %s AND s.fiscal_year = %s
+          {product_filter} AND {sales_team}
+        GROUP BY {group_column}
+        ORDER BY SUM(COALESCE(s.discounts,0)) DESC NULLS LAST
+        LIMIT 20"""
+        params = [positions, reporting_month, fy] + product_params
+        columns = ["Position Code" if entity == "product" else "Product Code", "Employee" if entity == "product" else "Product", "TP Value", "Discount", "Discount %", "Returns", "Net Sales"]
+        label = "Discount and returns"
+
+    rows = query(sql, params, f"ai.quick.{entity}.{topic}")
+    return {
+        "title": label, "entity": entity, "entity_id": entity_id,
+        "topic": topic, "columns": columns,
+        "rows": [list(row) for row in rows], "row_limit": 20,
+        "sql": sql.strip(),
+        "parameters": {"entity_id": entity_id, "month": month, "previous_month": previous_date.strftime("%b-%Y"), "fy": fy, "team": team, "position_count": len(positions)},
+    }
+
+
 @app.get("/")
 def index(request: Request):
     page = "index.html" if session_from_request(request) else "login.html"
