@@ -63,10 +63,14 @@
     const remaining = related.slice(3);
     const relatedTotal = Number(item.related_total ?? related.length);
     const remainingTotal = Math.max(0, relatedTotal - 3);
+    const evidence = Array.isArray(item.evidence) ? item.evidence.filter(Boolean) : [];
+    const evidenceDropdown = evidence.length
+      ? `<details class="ai-evidence"><summary>View evidence (${evidence.length})</summary><ul>${evidence.map(point => `<li>${esc(point)}</li>`).join('')}</ul></details>`
+      : '';
     const expandedNames = remaining.length
       ? `<details class="ai-related-names"><summary>Show more names (${remaining.length}${remainingTotal > remaining.length ? ` of ${remainingTotal}` : ''})</summary><ul>${remaining.map(person => `<li><b>${esc(person.name)}</b>${person.value ? ` <span>(${esc(person.value)})</span>` : ''}</li>`).join('')}</ul></details>`
       : '';
-    return `<li class="ai-why ${tone}"><div class="ai-why-top"><b>${esc(item.title)}</b>${item.impact > 0 ? `<span>${esc(item.impact_label)}</span>` : ''}</div><p>${esc(item.detail)}</p>${expandedNames}</li>`;
+    return `<li class="ai-why ${tone}"><div class="ai-why-top"><b>${esc(item.title)}</b>${item.impact > 0 ? `<span>${esc(item.impact_label)}</span>` : ''}</div><p>${esc(item.detail)}</p>${evidenceDropdown}${expandedNames}</li>`;
   };
   const bridgeHtml = bridge => {
     if (!bridge) return '';

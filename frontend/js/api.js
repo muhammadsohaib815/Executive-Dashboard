@@ -911,7 +911,16 @@
       }
       const seen = new Set();
       const finalRows = rows.sort((a,b) => b.priority - a.priority).filter(r => { const k = r.title.split(" ")[0]; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 5);
-      insightBox.innerHTML = finalRows.length ? finalRows.map((r, i) => `<details class="num-row section5-insight"><summary><span class="num n${i % 5}">${i + 1}</span><span class="section5-insight-summary"><b class="section5-insight-title">${html(r.title)}</b><small>Click for details</small></span></summary><div class="section5-insight-detail"><span class="section5-insight-finding"><strong>Finding:</strong> ${html(r.finding)}</span><small class="section5-insight-metrics">${r.metrics.map(html).join(" · ")}</small><span class="section5-insight-next"><strong>Next Step:</strong> ${html(r.next)}</span></div></details>`).join("") : '<div class="empty-state"><p>No actionable insights are available for this selection.</p></div>';
+      insightBox.innerHTML = finalRows.length ? finalRows.map((r, i) => {
+        const title = String(r.title || '').toUpperCase();
+        const lowest = /^LOWEST\b/.test(title);
+        const tone = lowest ? 'red'
+          : /TOP TEAM PERFORMANCE|TOP .*PERFORMANCE/.test(title) ? 'green'
+          : /GAP/.test(title) ? 'blue'
+          : /GROWTH|GOLM/.test(title) ? 'yellow'
+          : 'violet';
+        return `<details class="num-row section5-insight insight-tone-${tone}"><summary><span class="num insight-num-tone-${tone}">${i + 1}</span><span class="section5-insight-summary"><b class="section5-insight-title">${html(r.title)}</b><small>Click for details</small></span></summary><div class="section5-insight-detail"><span class="section5-insight-finding"><strong>Finding:</strong> ${html(r.finding)}</span><small class="section5-insight-metrics">${r.metrics.map(html).join(" · ")}</small><span class="section5-insight-next"><strong>Next Step:</strong> ${html(r.next)}</span></div></details>`;
+      }).join("") : '<div class="empty-state"><p>No actionable insights are available for this selection.</p></div>';
     }
     const actions = document.querySelector("[data-spo-actions]");
     if (actions) {
