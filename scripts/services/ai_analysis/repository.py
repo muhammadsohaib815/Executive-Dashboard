@@ -64,8 +64,13 @@ def load_context(query, scope_cte, filters, date, target_fy,
     for row in rows.values():
         for key, value in list(row.items()):
             if value is not None and key not in {'position','id','name','group'}: row[key]=float(value)
-    staff = query(f'''{cte} SELECT DISTINCT m.position_code,m.employee_name,m.designation_name,m.report_to_position_code
-        FROM staff_master m WHERE m.position_code IN (SELECT position_code FROM scope)''', args)
+    staff = query(f'''{cte} SELECT DISTINCT m.position_code,m.employee_name,m.designation_name,
+        m.report_to_position_code,m.team_name,m.dept_territory_code,m.region_name,m.zone_name,
+        m.sub_zone,parent.employee_name
+        FROM staff_master m
+        LEFT JOIN staff_master parent
+          ON TRIM(parent.position_code)=TRIM(m.report_to_position_code)
+        WHERE m.position_code IN (SELECT position_code FROM scope)''', args)
     customers = query(f'''{cte} SELECT s.cust_number,MAX(s.cust_name), {positive_expr},
         {returns_expr}
         FROM {customer_source} s WHERE s.position_code IN (SELECT position_code FROM scope)

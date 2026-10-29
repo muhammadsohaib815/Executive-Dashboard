@@ -58,7 +58,8 @@
     if (headerControls) {
       button.classList.add("header-filter-toggle");
       button.innerHTML = "Filter";
-      headerControls.insertBefore(button, $("teamToggle") || $("resetDashboard") || $("userMenu") || $("logoutButton") || null);
+      const scopeControls = headerControls.querySelector(".header-control-secondary") || headerControls;
+      scopeControls.insertBefore(button, $("teamToggle") || scopeControls.firstChild);
     } else {
       button.innerHTML = `<span>Filter</span><b class="filter-count">0</b><span class="filter-chevron">⌄</span>`;
       wrap.append(button);

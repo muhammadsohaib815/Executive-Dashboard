@@ -24,7 +24,6 @@ import re
 import secrets
 import threading
 import time
-from copy import deepcopy
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -351,6 +350,7 @@ class UserUpdateRequest(BaseModel):
 class ActionPlanRequest(BaseModel):
     action_text: str = Field(min_length=1, max_length=4000)
     action_owner_position_code: str = Field(min_length=1, max_length=120)
+    context_position_code: str | None = Field(default=None, max_length=120)
     due_date: dt.date | None = None
     priority: str = Field(default="Medium", max_length=20)
     status: str = Field(default="Open", max_length=30)
@@ -1106,41 +1106,86 @@ def can_choose_action_plan_owner(user: dict) -> bool:
     return str(user.get("role") or "").strip().lower() in {"admin", "exec", "executive"}
 
 
-def reporting_manager_recipient(user: dict) -> dict:
-    position_code = str(user.get("scope_position_code") or "").strip()
-    if not position_code:
+def action_plan_context_position(user: dict, requested_position_code: str = "") -> str:
+    """Resolve the dashboard position whose direct reports may receive an action."""
+    requested = str(requested_position_code or "").strip()
+    assigned = str(user.get("scope_position_code") or "").strip()
+    if not requested:
+        if assigned:
+            return assigned
+        if can_choose_action_plan_owner(user):
+            return ""
         raise HTTPException(403, "Your account needs an assigned staff position to send an action plan")
+    if assigned and not can_choose_action_plan_owner(user):
+        permitted = set(resolve_reporting_tree(assigned))
+        if requested not in permitted:
+            raise HTTPException(403, "The selected dashboard position is outside your reporting hierarchy")
+    return requested
+
+
+def direct_action_plan_recipients(position_code: str):
+    """Return direct reports, or the selected employee when the position is a leaf."""
     rows = query(
-        """SELECT TRIM(parent.position_code), TRIM(parent.employee_name),
-                  TRIM(parent.designation_name)
+        """SELECT DISTINCT ON (TRIM(child.position_code))
+                  TRIM(child.position_code), TRIM(child.employee_name),
+                  TRIM(child.designation_name), account.id
            FROM public.staff_master child
-           JOIN public.staff_master parent
-             ON TRIM(parent.position_code) = TRIM(child.report_to_position_code)
-           WHERE TRIM(child.position_code) = %s
-             AND NULLIF(TRIM(parent.employee_name), '') IS NOT NULL
-             AND NULLIF(TRIM(parent.designation_name), '') IS NOT NULL
-           ORDER BY parent.position_code LIMIT 1""",
-        [position_code], "actions.reporting_manager",
+           LEFT JOIN LATERAL (
+             SELECT user_account.id FROM public.dashboard_users user_account
+              WHERE user_account.is_active = TRUE AND user_account.role <> 'admin'
+                AND TRIM(user_account.scope_position_code) = TRIM(child.position_code)
+              ORDER BY user_account.id LIMIT 1
+           ) account ON TRUE
+           WHERE TRIM(child.report_to_position_code) = %s
+             AND NULLIF(TRIM(child.position_code), '') IS NOT NULL
+             AND NULLIF(TRIM(child.employee_name), '') IS NOT NULL
+             AND NULLIF(TRIM(child.designation_name), '') IS NOT NULL
+           ORDER BY TRIM(child.position_code), TRIM(child.employee_name)""",
+        [position_code], "actions.direct_reports",
     )
-    if not rows:
-        raise HTTPException(403, "No reporting manager is assigned to your staff position")
-    return {"position_code": rows[0][0], "employee_name": rows[0][1],
-            "designation": rows[0][2]}
+    if rows:
+        return rows, "direct reports"
+    rows = query(
+        """SELECT DISTINCT ON (TRIM(staff.position_code))
+                  TRIM(staff.position_code), TRIM(staff.employee_name),
+                  TRIM(staff.designation_name), account.id
+           FROM public.staff_master staff
+           LEFT JOIN LATERAL (
+             SELECT user_account.id FROM public.dashboard_users user_account
+              WHERE user_account.is_active = TRUE AND user_account.role <> 'admin'
+                AND TRIM(user_account.scope_position_code) = TRIM(staff.position_code)
+              ORDER BY user_account.id LIMIT 1
+           ) account ON TRUE
+           WHERE TRIM(staff.position_code) = %s
+             AND NULLIF(TRIM(staff.employee_name), '') IS NOT NULL
+             AND NULLIF(TRIM(staff.designation_name), '') IS NOT NULL
+           ORDER BY TRIM(staff.position_code), TRIM(staff.employee_name)""",
+        [position_code], "actions.leaf_recipient",
+    )
+    return rows, "selected employee"
 
 
 @app.get("/api/action-plan-recipient")
 def action_plan_recipient(request: Request):
     user = current_user(request)
-    if can_choose_action_plan_owner(user):
+    anchor = action_plan_context_position(user)
+    if not anchor:
         raise HTTPException(400, "Use the action owner picker for this account")
-    return {"recipient": reporting_manager_recipient(user)}
+    rows, label = direct_action_plan_recipients(anchor)
+    if len(rows) != 1:
+        raise HTTPException(400, "Use the action owner picker to select a direct report")
+    return {"recipient": {"position_code": rows[0][0], "employee_name": rows[0][1],
+                           "designation": rows[0][2]}, "recipient_label": label}
 
 
 @app.get("/api/action-plan-recipients")
-def action_plan_recipients(request: Request):
-    if not can_choose_action_plan_owner(current_user(request)):
-        raise HTTPException(403, "Only Admin and Executive accounts can choose an action owner")
-    rows = query(
+def action_plan_recipients(request: Request, context_position_code: str = ""):
+    user = current_user(request)
+    anchor = action_plan_context_position(user, context_position_code)
+    if anchor:
+        rows, label = direct_action_plan_recipients(anchor)
+    else:
+        rows = query(
         """SELECT DISTINCT ON (TRIM(s.position_code))
                   TRIM(s.position_code), TRIM(s.employee_name), TRIM(s.designation_name), u.id
            FROM public.staff_master s
@@ -1155,12 +1200,13 @@ def action_plan_recipients(request: Request):
              AND NULLIF(TRIM(s.designation_name), '') IS NOT NULL
            ORDER BY TRIM(s.position_code), TRIM(s.employee_name)""",
         [], "actions.recipients_staff",
-    )
+        )
+        label = "staff"
     return {"recipients": [
         {"position_code": row[0], "employee_name": row[1],
          "designation": row[2], "user_id": row[3]}
         for row in rows
-    ], "recipient_label": "staff"}
+    ], "recipient_label": label, "context_position_code": anchor or None}
 
 
 @app.post("/api/action-plans")
@@ -1174,9 +1220,11 @@ def create_action_plan(payload: ActionPlanRequest, request: Request):
         raise HTTPException(400, "Status must be Open, In Progress, or Complete")
     owner_code = payload.action_owner_position_code.strip()
     if not can_choose_action_plan_owner(user):
-        manager = reporting_manager_recipient(user)
-        if owner_code != manager["position_code"]:
-            raise HTTPException(403, "Action plans from this account must go to its reporting manager")
+        anchor = action_plan_context_position(user, payload.context_position_code or "")
+        permitted_rows, _ = direct_action_plan_recipients(anchor)
+        permitted_codes = {row[0] for row in permitted_rows}
+        if owner_code not in permitted_codes:
+            raise HTTPException(403, "Action plans must go to a direct report, or to the selected employee when it has no direct reports")
     allowed = query(
         """SELECT TRIM(s.employee_name)
            FROM public.staff_master s
@@ -1550,6 +1598,7 @@ def _kpis_uncached(
     territory: str = "All", employee: str = "All", team: str = "COMBINED",
     month: str = Query(..., description="e.g. Jul-2026"), fy: str = TARGET_FY,
     value_metric: str = "net_with_reg", use_summaries=None, resolved_positions=None,
+    period_rows=None,
 ):
     check_designation(designation)
     value_columns = {
@@ -1572,24 +1621,41 @@ def _kpis_uncached(
 
     sales_month = f"{d.strftime('%B')},{d.strftime('%y')}"          # July,26
     sfx = f"{d.strftime('%b').lower()}_{d.strftime('%y')}"           # jul_26
+    reporting_months = (
+        [item["reporting_month"] for item in period_rows]
+        if period_rows else [sales_month]
+    )
+    target_suffixes = (
+        [item["suffix"] for item in period_rows]
+        if period_rows else [sfx]
+    )
+    period_dates = (
+        [item["date"].date() for item in period_rows]
+        if period_rows else [d.date()]
+    )
+
+    def target_sum(prefix: str) -> str:
+        return " + ".join(f"COALESCE({prefix}_{suffix}, 0)" for suffix in target_suffixes)
     # Call-source extracts use `Jul-26`; retain `Jul,26` compatibility for
     # older imports while the source files are standardized.
-    month_abbr = d.strftime('%b')
-    month_aliases = [month_abbr]
-    # Some imported Pharma files use "Sept" while the dashboard formatter
-    # uses the standard three-letter "Sep" abbreviation.
-    if month_abbr == "Sep":
-        month_aliases.append("Sept")
-    call_months = [
-        token
-        for alias in month_aliases
-        for token in (f"{alias}-{d.strftime('%y')}", f"{alias},{d.strftime('%y')}")
-    ]
+    call_months = []
+    for period_date in ([item["date"] for item in period_rows] if period_rows else [d]):
+        month_aliases = [period_date.strftime('%b')]
+        # Some imported Pharma files use "Sept" while the dashboard formatter
+        # uses the standard three-letter "Sep" abbreviation.
+        if month_aliases[0] == "Sep":
+            month_aliases.append("Sept")
+        call_months.extend(
+            token
+            for alias in month_aliases
+            for token in (f"{alias}-{period_date.strftime('%y')}", f"{alias},{period_date.strftime('%y')}")
+        )
     scope_positions = (resolve_authorized_positions(
         designation, region, zone, subzone, territory, employee, team,
     ) if resolved_positions is None else list(resolved_positions))
     cte, cte_params = scope_cte(
-        designation, region, zone, subzone, territory, employee, team, sfx,
+        designation, region, zone, subzone, territory, employee, team,
+        sfx if len(target_suffixes) == 1 else None,
         resolved_positions=scope_positions,
     )
 
@@ -1603,10 +1669,11 @@ def _kpis_uncached(
              SUM({num('net_sale_value')}) FILTER (WHERE {num('net_sale_value')} > 0),
              SUM({num('tp_sale_value')}) FILTER (WHERE {num('tp_sale_value')} > 0),
              SUM({num('bonus_discount')}),
-             COUNT(DISTINCT cust_number) FILTER (WHERE cust_number IS NOT NULL)
+             COUNT(DISTINCT cust_number) FILTER (WHERE cust_number IS NOT NULL),
+             SUM({num(sales_column)}) FILTER (WHERE reporting_month = %s)
       FROM sales_data
       WHERE position_code IN (SELECT position_code FROM scope)
-        AND reporting_month = %s AND fiscal_year = %s"""
+        AND reporting_month = ANY(%s) AND fiscal_year = %s"""
     # Prior month actuals are used by the individual field-force KPI subtitles.
     prev_d = d.replace(day=1) - dt.timedelta(days=1)
     prev_month = f"{prev_d.strftime('%B')},{prev_d.strftime('%y')}"
@@ -1629,21 +1696,24 @@ def _kpis_uncached(
                  SUM(COALESCE(s.negative_net_sale_abs, 0)) AS returns,
                  SUM(COALESCE(s.positive_net_sale_value, 0)) AS positive_sales,
                  SUM(COALESCE(s.positive_tp_sale_value, 0)) AS positive_tp,
-                 SUM(COALESCE(s.bonus_discount, 0)) AS bonus_discount
+                 SUM(COALESCE(s.bonus_discount, 0)) AS bonus_discount,
+                 SUM(COALESCE(s.{summary_metric}, 0)) FILTER (
+                   WHERE s.reporting_month = %s) AS selected_metric
           FROM public.sales_monthly_position_summary s
           WHERE s.position_code IN (SELECT position_code FROM scope)
-            AND s.reporting_month = %s AND s.fiscal_year = %s AND {summary_team}
+            AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s AND {summary_team}
         ), customers AS (
           SELECT COUNT(DISTINCT s.cust_number) FILTER (WHERE s.has_positive_sale) AS active_customers,
                  COUNT(DISTINCT s.cust_number) AS transacting_customers
           FROM public.sales_monthly_customer_summary s
           WHERE s.position_code IN (SELECT position_code FROM scope)
-            AND s.reporting_month = %s AND s.fiscal_year = %s AND {summary_team}
+            AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s AND {summary_team}
         ) SELECT a.tp, a.net, a.units, a.net_wo_reg, a.cyp,
                  c.active_customers, a.active_positions, a.returns, a.positive_sales,
-                 a.positive_tp, a.bonus_discount, c.transacting_customers
+                 a.positive_tp, a.bonus_discount, c.transacting_customers,
+                 a.selected_metric
           FROM actual a CROSS JOIN customers c"""
-        sales_params = cte_params + [sales_month, fy, sales_month, fy]
+        sales_params = cte_params + [sales_month, reporting_months, fy, reporting_months, fy]
         prev_sql = f"""{cte}, actual AS (
           SELECT SUM(COALESCE(s.net_wo_reg_disc_value, 0)) AS net_wo_reg,
                  SUM(COALESCE(s.units, 0)) AS units,
@@ -1663,7 +1733,7 @@ def _kpis_uncached(
           FROM actual a CROSS JOIN customers c"""
         prev_params = cte_params + [prev_month, fy, prev_month, fy]
     else:
-        sales_params = cte_params + [sales_month, fy]
+        sales_params = cte_params + [sales_month, reporting_months, fy]
         prev_params = cte_params + [prev_month, fy]
     if not use_summaries:
         prev_sql = f"""{cte}
@@ -1690,7 +1760,7 @@ def _kpis_uncached(
           JOIN scope child_scope ON child_scope.position_code = child.position_code
           ), selling_positions AS (
           SELECT DISTINCT position_code FROM {('public.sales_monthly_position_summary' if use_summaries else 'sales_data')}
-          WHERE reporting_month = %s AND fiscal_year = %s
+          WHERE reporting_month = ANY(%s) AND fiscal_year = %s
             AND {('positive_sale_rows > 0' if use_summaries else num('net_sale_value') + ' > 0')}
             {('AND ' + team_predicate('team', team)) if use_summaries else ''})
           SELECT COUNT(DISTINCT root_code),
@@ -1700,21 +1770,21 @@ def _kpis_uncached(
 
     # First-ever positive sale by customer, constrained to the selected field-force scope.
     first_sql = f"""{cte}, first_buy AS (
-      SELECT cust_number, MIN(reporting_month) AS first_month
+      SELECT cust_number, MIN(TO_DATE(reporting_month, 'FMMonth,YY')) AS first_date
       FROM {('public.sales_monthly_customer_summary' if use_summaries else 'sales_data')}
       WHERE position_code IN (SELECT position_code FROM scope)
         AND {('has_positive_sale' if use_summaries else num('net_sale_value') + ' > 0')}
         {('AND ' + team_predicate('team', team)) if use_summaries else ''}
       GROUP BY cust_number)
-      SELECT COUNT(*) FROM first_buy WHERE first_month = %s"""
+      SELECT COUNT(*) FROM first_buy WHERE first_date = ANY(%s::date[])"""
     # These aggregates are independent. Run them together so one slow scan
     # does not delay the start of every other KPI query.
     with ThreadPoolExecutor(max_workers=4) as executor:
         sales_future = submit_query(executor, "kpis.sales_summary" if use_summaries else "kpis.sales", sales_sql, sales_params)
         prev_future = submit_query(executor, "kpis.previous_summary" if use_summaries else "kpis.previous", prev_sql, prev_params)
-        first_future = submit_query(executor, "kpis.first_buy", first_sql, cte_params + [sales_month])
+        first_future = submit_query(executor, "kpis.first_buy", first_sql, cte_params + [period_dates])
         lower_future = (submit_query(executor, "kpis.lower_staff", lower_sql,
-                         cte_params + [list(lower_levels[designation]), sales_month, fy])
+                         cte_params + [list(lower_levels[designation]), reporting_months, fy])
                         if designation in lower_levels else None)
         s = [float(x or 0) for x in sales_future.result()[0]]
         prev = [float(x or 0) for x in prev_future.result()[0]]
@@ -1726,10 +1796,10 @@ def _kpis_uncached(
     t = [0.0] * 7
     if fy == TARGET_FY:
         tgt_sql = f"""{cte}
-          SELECT SUM(tgt_tp_value_{sfx}), SUM(tgt_net_w_reg_{sfx}), SUM(tgt_unit_{sfx}),
-                 SUM(tgt_net_wo_reg_{sfx}), SUM(tgt_cyps_{sfx}),
-                 SUM(COALESCE(tgt_add_disc_value_{sfx},0)),
-                 SUM(COALESCE(tgt_reg_disc_value_{sfx},0))
+          SELECT SUM({target_sum('tgt_tp_value')}), SUM({target_sum('tgt_net_w_reg')}),
+                 SUM({target_sum('tgt_unit')}), SUM({target_sum('tgt_net_wo_reg')}),
+                 SUM({target_sum('tgt_cyps')}), SUM({target_sum('tgt_add_disc_value')}),
+                 SUM({target_sum('tgt_reg_disc_value')})
           FROM target_data
           WHERE position_code_2026_27 IN (SELECT position_code FROM scope)"""
         t = [float(x or 0) for x in query(tgt_sql, cte_params)[0]]
@@ -1746,7 +1816,7 @@ def _kpis_uncached(
       FROM {cur_sales_source} s
       JOIN staff_master m ON m.position_code = s.position_code
       WHERE s.position_code IN (SELECT position_code FROM scope)
-        AND s.reporting_month = %s AND s.fiscal_year = %s {cur_team_filter}""", cte_params + [sales_month, fy])[0]
+        AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s {cur_team_filter}""", cte_params + [reporting_months, fy])[0]
     mio_act, spo_act = float(cur_res[0] or 0), float(cur_res[1] or 0)
 
     tgt_counts = query(f"""{cte}
@@ -1773,7 +1843,7 @@ def _kpis_uncached(
         return {"actual": actual, "target": target,
                 "ach": round(actual / target * 100, 1) if target else None}
 
-    tp, net, units, wo, cyp, shops, active_pos, ret, pos_sales, pos_gross, bonus_discount, transacting_shops = s
+    tp, net, units, wo, cyp, shops, active_pos, ret, pos_sales, pos_gross, bonus_discount, transacting_shops, selected_month_value = s
     disc_actual = tp - net  # additional + regular discount actually given
 
     spo_sections = {}
@@ -1796,12 +1866,12 @@ def _kpis_uncached(
                      COUNT(DISTINCT s.cust_number) FILTER (WHERE s.has_positive_sale) AS active_shops
               FROM public.sales_monthly_customer_summary s
               WHERE s.position_code IN (SELECT position_code FROM child_force)
-                AND s.reporting_month = %s AND s.fiscal_year = %s
+                AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
                 AND {team_predicate('s.team', team)}
               GROUP BY s.position_code)"""
             customer_join = "LEFT JOIN customer_by_person customer ON customer.position_code = c.position_code"
             active_shops_expr = "COALESCE(customer.active_shops, 0)"
-            person_params = cte_params + [sales_month, fy, sales_month, fy]
+            person_params = cte_params + [reporting_months, fy, reporting_months, fy]
         else:
             person_source = "sales_data"
             person_selected = num('s.' + sales_column)
@@ -1812,7 +1882,7 @@ def _kpis_uncached(
             customer_cte = ""
             customer_join = ""
             active_shops_expr = "COALESCE(a.active_shops, 0)"
-            person_params = cte_params + [sales_month, fy]
+            person_params = cte_params + [reporting_months, fy]
         team_rows = query(f"""{cte}, child_force AS (
           SELECT m.position_code, MAX(m.employee_name) AS employee_name,
                  MAX(m.designation_name) AS designation_name
@@ -1831,13 +1901,13 @@ def _kpis_uncached(
                  {'' if use_summaries else ", COUNT(DISTINCT s.cust_number) FILTER (WHERE " + num('s.net_sale_value') + " > 0) AS active_shops"}
           FROM {person_source} s
           WHERE s.position_code IN (SELECT position_code FROM child_force)
-            AND s.reporting_month = %s AND s.fiscal_year = %s
+            AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
             {person_team_filter}
           GROUP BY s.position_code), target_by_person AS (
           SELECT position_code_2026_27 AS position_code,
-                 SUM(COALESCE({target_prefix}_{sfx}, 0)) AS target_sales,
-                 SUM(COALESCE(tgt_tp_value_{sfx}, 0)) AS target_tp,
-                 SUM(COALESCE(tgt_add_disc_value_{sfx}, 0) + COALESCE(tgt_reg_disc_value_{sfx}, 0)) AS discount_budget
+                 SUM({target_sum(target_prefix)}) AS target_sales,
+                 SUM({target_sum('tgt_tp_value')}) AS target_tp,
+                 SUM({target_sum('tgt_add_disc_value')} + {target_sum('tgt_reg_disc_value')}) AS discount_budget
           FROM target_data
           WHERE position_code_2026_27 IN (SELECT position_code FROM child_force)
           GROUP BY position_code_2026_27){customer_cte}
@@ -1887,7 +1957,7 @@ def _kpis_uncached(
           WHERE parent.designation_name = 'ASM'
             AND m.designation_name IN ('SPO', 'MIO')
           GROUP BY m.position_code), product_targets AS (
-          SELECT product_group_on_master AS group_on, SUM(COALESCE({target_prefix}_{sfx}, 0)) AS target_sales
+          SELECT product_group_on_master AS group_on, SUM({target_sum(target_prefix)}) AS target_sales
           FROM target_data
           WHERE position_code_2026_27 IN (SELECT position_code FROM child_force)
             AND product_group_on_master IS NOT NULL
@@ -1895,14 +1965,14 @@ def _kpis_uncached(
           SELECT group_on, SUM({critical_metric}) AS actual_sales
           FROM {critical_source}
           WHERE position_code IN (SELECT position_code FROM child_force)
-            AND reporting_month = %s AND fiscal_year = %s
+            AND reporting_month = ANY(%s) AND fiscal_year = %s
             AND group_on IS NOT NULL
             {critical_team_filter}
           GROUP BY group_on)
           SELECT COUNT(*) FROM product_targets t
           LEFT JOIN product_actuals a ON a.group_on = t.group_on
           WHERE t.target_sales > 0 AND COALESCE(a.actual_sales, 0) / t.target_sales < 0.5""",
-          cte_params + [sales_month, fy])[0][0] if fy == TARGET_FY else 0
+          cte_params + [reporting_months, fy])[0][0] if fy == TARGET_FY else 0
         spo_sections["team_summary"] = {
             "member_count": len(team_performance),
             "performing_count": sum(x["achievement_pct"] is not None and x["achievement_pct"] >= 100 for x in team_performance),
@@ -1935,7 +2005,7 @@ def _kpis_uncached(
 
     product_rows = query(f"""{cte}, target_by_product AS (
       SELECT td.product_group_on_master AS group_on,
-             SUM(COALESCE(td.{target_prefix}_{sfx}, 0)) AS target_net_sales
+             SUM({target_sum('td.' + target_prefix)}) AS target_net_sales
       FROM target_data td
       WHERE td.position_code_2026_27 IN (SELECT position_code FROM scope)
         AND td.product_group_on_master IS NOT NULL
@@ -1949,7 +2019,7 @@ def _kpis_uncached(
              SUM({product_tp}) - SUM({product_net}) AS discount_value
       FROM {product_source} s
       WHERE s.position_code IN (SELECT position_code FROM scope)
-        AND s.reporting_month = %s AND s.fiscal_year = %s
+        AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
         AND s.group_on IS NOT NULL
         {sales_team_filter}
       GROUP BY s.group_on), products AS (
@@ -1985,7 +2055,7 @@ def _kpis_uncached(
       WHERE achievement_bottom_rank <= 25 OR achievement_top_rank <= 25
          OR discount_bottom_rank <= 25 OR discount_top_rank <= 25
       ORDER BY actual_net_sales DESC NULLS LAST""",
-      cte_params + [sales_month, fy]) if fy == TARGET_FY else []
+      cte_params + [reporting_months, fy]) if fy == TARGET_FY else []
     product_performance = [
         {"group_on": r[0], "product_no": r[0], "prd_name": r[1] or r[0],
          "actual_net_sales": float(r[2] or 0), "target_net_sales": float(r[3] or 0),
@@ -2017,13 +2087,13 @@ def _kpis_uncached(
              SUM({product_tp}) - SUM({product_net}) AS discount_value
       FROM {product_source} s
       WHERE s.position_code IN (SELECT position_code FROM scope)
-        AND s.reporting_month = %s AND s.fiscal_year = %s
+        AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
         AND s.group_on IS NOT NULL
         {sales_team_filter}
       GROUP BY s.group_on
       HAVING SUM({product_tp}) > 0
          AND SUM({product_tp}) - SUM({product_net}) > 0""",
-      cte_params + [sales_month, fy])
+      cte_params + [reporting_months, fy])
     )
     discount_products = [
         {"group_on": r[0], "prd_name": r[1] or r[0],
@@ -2048,7 +2118,7 @@ def _kpis_uncached(
       SELECT cust_name, cust_number, SUM({customer_metric}) AS net_sales
       FROM {customer_source}
       WHERE position_code IN (SELECT position_code FROM scope)
-        AND reporting_month = %s AND fiscal_year = %s
+        AND reporting_month = ANY(%s) AND fiscal_year = %s
         {customer_team_filter}
       GROUP BY cust_name, cust_number
       HAVING SUM({customer_metric}) > 0), ranked_customers AS (
@@ -2058,7 +2128,7 @@ def _kpis_uncached(
       FROM customer_sales)
       SELECT cust_name, cust_number, net_sales, top_rank, bottom_rank
       FROM ranked_customers WHERE top_rank <= 25 OR bottom_rank <= 25
-      ORDER BY net_sales DESC""", cte_params + [sales_month, fy])
+      ORDER BY net_sales DESC""", cte_params + [reporting_months, fy])
     spo_sections["top_customers"] = [
         {"cust_name": r[0], "cust_number": r[1], "net_sales": float(r[2] or 0)}
         for r in customer_rows if r[3] <= 25
@@ -2247,9 +2317,9 @@ def _kpis_uncached(
         ), actuals AS (
           SELECT position_code, SUM({manager_metric}) AS actual FROM {manager_source}
           WHERE position_code IN (SELECT position_code FROM scope)
-            AND reporting_month = %s AND fiscal_year = %s {manager_team_filter} GROUP BY position_code
+            AND reporting_month = ANY(%s) AND fiscal_year = %s {manager_team_filter} GROUP BY position_code
         ), targets AS (
-          SELECT position_code_2026_27 AS position_code, SUM({target_prefix}_{sfx}) AS target
+          SELECT position_code_2026_27 AS position_code, SUM({target_sum(target_prefix)}) AS target
           FROM target_data WHERE position_code_2026_27 IN (SELECT position_code FROM scope)
           GROUP BY position_code_2026_27
         ), performance AS (
@@ -2286,7 +2356,7 @@ def _kpis_uncached(
         WHERE role_bottom_rank <= 25 OR role_top_rank <= 25
            OR all_bottom_rank <= 25 OR all_top_rank <= 25
         ORDER BY position_code""",
-          cte_params + [list(manager_roles[designation]), sales_month, fy])
+          cte_params + [list(manager_roles[designation]), reporting_months, fy])
         hierarchy_total = int(team_rows[0][5] or 0) if team_rows else 0
         hierarchy_active = int(team_rows[0][6] or 0) if team_rows else 0
         spo_sections["hierarchy_performance"] = [
@@ -2364,7 +2434,7 @@ def _kpis_uncached(
         "gross_tp": pair(tp, t[0]),
         "net_sales": pair(wo, t[3]),
         "net_sales_value": pair(s[sales_index], t[target_index]),
-        "golm": round((s[sales_index] - prev[5]) / abs(prev[5]) * 100, 1) if prev[5] else None,
+        "golm": round((selected_month_value - prev[5]) / abs(prev[5]) * 100, 1) if prev[5] else None,
         "golm_previous_value": prev[5],
         "active_lower_staff": pair(lower_actual, lower_total),
         "units": pair(units, t[2]),
@@ -2414,120 +2484,20 @@ def _ytd_kpis_uncached(
     designation, region, zone, subzone, territory, employee, team, month, fy,
     value_metric, use_summaries, resolved_positions,
 ):
-    """Build YTD KPIs from month-level calculations and exact distinct counts."""
+    """Build every dashboard section across the complete fiscal YTD period."""
     periods = fiscal_period_rows(month, "YTD")
-    monthly = [
-        _kpis_uncached(
-            designation, region, zone, subzone, territory, employee, team,
-            item["month"], fy, value_metric,
-            use_summaries=use_summaries, resolved_positions=resolved_positions,
-        )
-        for item in periods
-    ]
-    if not monthly:
-        return _kpis_uncached(
-            designation, region, zone, subzone, territory, employee, team,
-            month, fy, value_metric, use_summaries=use_summaries,
-            resolved_positions=resolved_positions,
-        )
-
-    result = deepcopy(monthly[-1])
-    additive_pairs = ("gross_tp", "net_sales", "net_sales_value", "units", "net_wo_reg", "cyp")
-    for field in additive_pairs:
-        result[field] = {
-            "actual": sum(float(item[field].get("actual") or 0) for item in monthly),
-            "target": sum(float(item[field].get("target") or 0) for item in monthly),
-        }
-        target = result[field]["target"]
-        result[field]["ach"] = round(result[field]["actual"] / target * 100, 1) if target else None
-
-    selected_field = {
-        "tp": "gross_tp", "net_with_reg": "net_sales_value",
-        "units": "units", "cyp": "cyp",
-    }.get(value_metric, "net_sales_value")
-    current_value = result[selected_field]["actual"]
-    previous_value = sum(
-        float(item[selected_field].get("actual") or 0) for item in monthly[:-1]
-    )
-    result["golm"] = round((current_value - previous_value) / abs(previous_value) * 100, 1) if previous_value else None
-    result["golm_previous_value"] = previous_value
-
-    period_months = [item["reporting_month"] for item in periods]
-    latest_suffix = periods[-1]["suffix"]
-    scope_cte_sql, scope_params = scope_cte(
+    result = _kpis_uncached(
         designation, region, zone, subzone, territory, employee, team,
-        latest_suffix, resolved_positions=resolved_positions,
+        month, fy, value_metric, use_summaries=use_summaries,
+        resolved_positions=resolved_positions, period_rows=periods,
     )
-    summary_team = team_predicate("s.team", team)
-    customer_source = "public.sales_monthly_customer_summary" if use_summaries else "sales_data"
-    position_source = "public.sales_monthly_position_summary" if use_summaries else "sales_data"
-    customer_positive = "s.has_positive_sale" if use_summaries else f"{num('s.net_sale_value')} > 0"
-    position_positive = "s.positive_sale_rows > 0" if use_summaries else f"{num('s.net_sale_value')} > 0"
 
-    customer_counts = query(
-        f"""{scope_cte_sql}
-          SELECT COUNT(DISTINCT s.cust_number) FILTER (WHERE {customer_positive}),
-                 COUNT(DISTINCT s.cust_number)
-          FROM {customer_source} s
-          WHERE s.position_code IN (SELECT position_code FROM scope)
-            AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
-            AND {summary_team}""",
-        scope_params + [period_months, fy], "kpis.ytd.customers",
-    )[0]
-    position_counts = query(
-        f"""{scope_cte_sql}
-          SELECT COUNT(DISTINCT s.position_code) FILTER (WHERE {position_positive}),
-                 COUNT(DISTINCT CASE WHEN m.designation_name = 'MIO' AND {position_positive} THEN s.position_code END),
-                 COUNT(DISTINCT CASE WHEN m.designation_name = 'SPO' AND {position_positive} THEN s.position_code END)
-          FROM {position_source} s
-          JOIN staff_master m ON m.position_code = s.position_code
-          WHERE s.position_code IN (SELECT position_code FROM scope)
-            AND s.reporting_month = ANY(%s) AND s.fiscal_year = %s
-            AND {summary_team}""",
-        scope_params + [period_months, fy], "kpis.ytd.positions",
-    )[0]
-
-    active_shops, transacting_shops = (int(customer_counts[0] or 0), int(customer_counts[1] or 0))
-    active_staff, active_mio, active_spo = (int(position_counts[0] or 0), int(position_counts[1] or 0), int(position_counts[2] or 0))
-    result["active_shops"] = {
-        "actual": active_shops, "total": transacting_shops,
-        "ach": round(active_shops / transacting_shops * 100, 1) if transacting_shops else None,
-    }
-    result["productive_shops"] = active_shops
-    result["avg_sales_per_productive_shop"] = current_value / active_shops if active_shops else 0
-    result["active_staff"] = {
-        "actual": active_staff,
-        "total": result.get("active_staff", {}).get("total", active_staff),
-        "ach": round(active_staff / result.get("active_staff", {}).get("total", active_staff) * 100, 1)
-        if result.get("active_staff", {}).get("total", active_staff) else None,
-    }
-    for field, actual in (("active_mio", active_mio), ("active_spo", active_spo)):
-        result[field]["actual"] = actual
-        target = result[field].get("target") or result[field].get("total") or 0
-        result[field]["ach"] = round(actual / target * 100, 1) if target else None
-
-    result["returns"] = {
-        "value": sum(float(item["returns"].get("value") or 0) for item in monthly),
-        "pct": None,
-    }
-    positive_gross = sum(float(item["discount"].get("tp_value") or 0) for item in monthly)
-    result["returns"]["pct"] = round(result["returns"]["value"] / positive_gross * 100, 1) if positive_gross else None
-
-    discount = result["discount"]
-    for field in ("actual", "budget", "bonus_discount", "regular_discount", "budget_additional_discount", "budget_regular_discount", "budget_variance", "tp_value", "net_wo_reg_value", "net_value"):
-        discount[field] = sum(float(item["discount"].get(field) or 0) for item in monthly)
-    discount["actual_pct"] = round(discount["actual"] / discount["tp_value"] * 100, 1) if discount["tp_value"] else None
-    discount["budget_pct"] = round(discount["budget"] / result["gross_tp"]["target"] * 100, 1) if result["gross_tp"]["target"] else None
-
-    result["first_time_buying_shops"] = sum(
-        float(item.get("spo_metrics", {}).get("first_time_buying_shops") or 0) for item in monthly
+    result["meta"] = dict(
+        result.get("meta", {}), period="YTD",
+        period_months=[item["reporting_month"] for item in periods],
+        period_start=periods[0]["month"] if periods else month,
+        period_end=month,
     )
-    result.setdefault("spo_metrics", {})["first_time_buying_shops"] = result["first_time_buying_shops"]
-    result["spo_metrics"]["target_gap"] = result["target_gap"] if "target_gap" in result else result[selected_field]["target"] - result[selected_field]["actual"]
-    result["spo_metrics"]["avg_sales_per_shop"] = result["avg_sales_per_productive_shop"]
-    result["target_gap"] = result[selected_field]["target"] - result[selected_field]["actual"]
-    result["target_gap_status"] = "ahead" if result[selected_field]["actual"] >= result[selected_field]["target"] else "short"
-    result["meta"] = dict(result.get("meta", {}), period="YTD", period_months=period_months, period_end=month)
     return result
 
 

@@ -160,7 +160,8 @@ def analyze(context, limit=None, offset=0, band='all'):
             [('Target opportunity',money(opportunity)),('Products',len(recovery))],confidence=70)
     # 10: direct-level manager comparison rolls each child hierarchy up once.
     staff={s[0]:s for s in context['staff']}; children=defaultdict(list)
-    for pos,name,role,parent in context['staff']: children[parent].append(pos)
+    for staff_row in context['staff']:
+        children[staff_row[3]].append(staff_row[0])
     levels={'ASM':{'SPO','MIO'},'RSM':{'ASM'},'HOD':{'RSM'},'ALL':{'RSM'}}
     ppositions={p['id']:p for p in positions}; teams=[]
     for code,s in staff.items():
@@ -239,7 +240,24 @@ def analyze(context, limit=None, offset=0, band='all'):
         people_only = {"employee_underperformance", "vacancy_coverage", "customer_concentration"}
         candidates = [candidate for candidate in candidates if candidate["type"] not in people_only]
     insights=rank(candidates,scale,designation)
-    staff_by_position = {row[0]: {'employee': row[1], 'designation': row[2]} for row in context.get('staff', [])}
+    staff_by_position = {
+        row[0]: {
+            'employee': row[1], 'designation': row[2], 'parent_position_code': row[3],
+            'team': row[4], 'territory': row[5], 'region': row[6], 'zone': row[7],
+            'subzone': row[8], 'reports_to': row[9],
+        }
+        for row in context.get('staff', [])
+    }
+
+    def staff_identity(position):
+        detail = staff_by_position.get(position, {})
+        return dict(
+            position_code=position,
+            team=detail.get('team'), territory=detail.get('territory'),
+            region=detail.get('region'), zone=detail.get('zone'),
+            subzone=detail.get('subzone'), reports_to=detail.get('reports_to'),
+            reports_to_position_code=detail.get('parent_position_code'),
+        )
     def card_kpis(record, target_record, achievement_value, entity_label):
         previous = record.get('previous') or 0
         actual_value = record.get('actual') or 0
@@ -275,6 +293,7 @@ def analyze(context, limit=None, offset=0, band='all'):
             designation=staff_by_position.get(p.get('id'), {}).get('designation') or designation,
             actual=p.get('actual'), target=p.get('target'),
             achievement_pct=round(p['achievement'], 1),
+            **staff_identity(p.get('id')),
             **card_kpis(employee_kpis.get(p.get('id'), {}), p, p['achievement'], 'employee'),
         )
         for p in positions if p.get('achievement') is not None
@@ -317,6 +336,7 @@ def analyze(context, limit=None, offset=0, band='all'):
             achievement_value = actual / target * 100 if target else None
             manager_cards.append(dict(employee=staff_row.get('employee') or position, employee_id=position,
                 designation=designation, actual=actual, target=target, achievement_pct=round(achievement_value, 1),
+                **staff_identity(position),
                 **card_kpis(kpi, target_record, achievement_value, 'team')))
         employee_performance = manager_cards
     def in_band(card):

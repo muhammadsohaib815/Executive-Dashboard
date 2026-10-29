@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=20261028-1" />
+  <link rel="stylesheet" href="/css/styles.css?v=20261029-9" />
 </head>
 <body class="executive-page">
   <div class="app executive-dashboard" id="app" data-designation="HOD">
@@ -27,42 +27,47 @@
         <div class="brand-text">
           <h1 id="dashTitle">Executive Dashboard</h1>
           <p id="dashSubtitle"></p>
+          <nav id="hierarchyBreadcrumb" class="hierarchy-breadcrumb" aria-label="Dashboard hierarchy"></nav>
         </div>
       </div>
 
       <div class="header-controls" aria-label="Dashboard team, period, metric, month, filter, and visibility controls">
-        <div class="segment-toggle team-toggle" id="teamToggle" role="group" aria-label="Team">
-          <button type="button" data-team="COMBINED" aria-pressed="true">Combined</button>
-          <button type="button" data-team="FMCG" aria-pressed="false">FMCG</button>
-          <button type="button" data-team="PHARMA" aria-pressed="false">Pharma</button>
-        </div>
-        <div class="segment-toggle period-toggle" id="periodToggle" role="group" aria-label="Reporting period">
-          <button type="button" data-period="MTD" aria-pressed="true">MTD</button>
-          <button type="button" data-period="YTD" aria-pressed="false">YTD</button>
-        </div>
-        <div class="segment-toggle metric-toggle" id="valueToggle" role="group" aria-label="Sales metric">
-          <button type="button" data-value-metric="tp" aria-pressed="false">TP Value</button>
-          <button type="button" data-value-metric="net_with_reg" aria-pressed="true">Net Sale Value</button>
-          <button type="button" data-value-metric="units" aria-pressed="false">Units</button>
-          <button type="button" data-value-metric="cyp" aria-pressed="false">CYP</button>
-        </div>
-        <label class="header-month" for="fMonth">
-          <span>Month</span>
-          <select id="fMonth" name="month" aria-label="Reporting month"></select>
-        </label>
-        <button id="resetDashboard" class="reset-dashboard" type="button" title="Reset dashboard filters">Reset</button>
-        <button id="toggleHeaderOptions" class="hide-controls-button" type="button" aria-expanded="true" title="Hide dashboard controls">Hide</button>
-        <div class="user-menu" id="userMenu">
-          <button id="userMenuButton" class="user-menu-button" type="button" aria-expanded="false" aria-controls="userMenuPanel" hidden>
-            <span data-auth-first-name>User</span>
-          </button>
-          <div id="userMenuPanel" class="user-menu-panel" hidden>
-            <div class="user-menu-heading"><strong data-auth-user></strong><span>Account options</span></div>
-            <a id="profileLink" class="admin-link" href="#profile">Profile</a>
-            <a id="adminLink" class="admin-link" href="/admin" hidden>Administration</a>
+        <div class="header-control-row header-control-primary">
+          <div class="segment-toggle metric-toggle" id="valueToggle" role="group" aria-label="Sales metric">
+            <button type="button" data-value-metric="tp" aria-pressed="false">TP Value</button>
+            <button type="button" data-value-metric="net_with_reg" aria-pressed="true">Net Sale Value</button>
+            <button type="button" data-value-metric="units" aria-pressed="false">Units</button>
+            <button type="button" data-value-metric="cyp" aria-pressed="false">CYP</button>
           </div>
+          <div class="segment-toggle period-toggle" id="periodToggle" role="group" aria-label="Reporting period">
+            <button type="button" data-period="MTD" aria-pressed="true">MTD</button>
+            <button type="button" data-period="YTD" aria-pressed="false">YTD</button>
+          </div>
+          <label class="header-month" for="fMonth">
+            <span class="visually-hidden">Month</span>
+            <select id="fMonth" name="month" aria-label="Reporting month"></select>
+          </label>
         </div>
-        <button id="logoutButton" class="logout-button" type="button" hidden>Logout</button>
+        <div class="header-control-row header-control-secondary">
+          <div class="segment-toggle team-toggle" id="teamToggle" role="group" aria-label="Team">
+            <button type="button" data-team="COMBINED" aria-pressed="true">Combined</button>
+            <button type="button" data-team="PHARMA" aria-pressed="false">Pharma</button>
+            <button type="button" data-team="FMCG" aria-pressed="false">FMCG</button>
+          </div>
+          <button id="resetDashboard" class="reset-dashboard" type="button" title="Reset dashboard filters">Reset</button>
+          <button id="toggleHeaderOptions" class="hide-controls-button" type="button" aria-expanded="true" title="Hide dashboard controls">Hide</button>
+          <div class="user-menu" id="userMenu">
+            <button id="userMenuButton" class="user-menu-button" type="button" aria-expanded="false" aria-controls="userMenuPanel" hidden>
+              <span data-auth-first-name>User</span>
+            </button>
+            <div id="userMenuPanel" class="user-menu-panel" hidden>
+              <div class="user-menu-heading"><strong data-auth-user></strong><span>Account options</span></div>
+              <a id="profileLink" class="admin-link" href="#profile">Profile</a>
+              <a id="adminLink" class="admin-link" href="/admin" hidden>Administration</a>
+            </div>
+          </div>
+          <button id="logoutButton" class="logout-button" type="button" hidden>Logout</button>
+        </div>
       </div>
 
       <form class="filters" id="filters" onsubmit="return false">
@@ -171,9 +176,9 @@
 
   <script src="/js/config.js?v=20261022-2"></script>
   <script src="/js/components.js?v=20261022-3"></script>
-  <script src="/js/api.js?v=20261028-1"></script>
-  <script src="/js/app.js?v=20261022-1"></script>
-  <script src="/js/ai-insights.js?v=20261021-1"></script>
+  <script src="/js/api.js?v=20261029-2"></script>
+  <script src="/js/app.js?v=20261029-2"></script>
+  <script src="/js/ai-insights.js?v=20261029-2"></script>
   <script src="/js/auth.js?v=20261022-1"></script>
 </body>
 </html>

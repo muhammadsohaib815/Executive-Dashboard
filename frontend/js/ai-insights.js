@@ -260,6 +260,23 @@
     }));
   }
 
+  function cardIdentityHtml(row, isProduct) {
+    if (isProduct) return `<span>SKU ${esc(row.product_id || 'N/A')}</span>`;
+    const join = values => values
+      .filter(value => value != null && String(value).trim() && String(value).trim().toLowerCase() !== 'all')
+      .map(esc).join(' · ');
+    const roleAndPosition = join([row.designation || state.designation, row.position_code || row.employee_id]);
+    const teamAndTerritory = join([row.team, row.territory]);
+    const geography = join([row.region, row.zone, row.subzone]);
+    const manager = join([row.reports_to, row.reports_to_position_code]);
+    return `<div class="ai-card-identity">
+      ${roleAndPosition ? `<span class="ai-card-role-position">${roleAndPosition}</span>` : ''}
+      ${teamAndTerritory ? `<span><em>Team / Territory</em>${teamAndTerritory}</span>` : ''}
+      ${geography ? `<span><em>Region / Zone / Sub Zone</em>${geography}</span>` : ''}
+      ${manager ? `<span><em>Reports to</em>${manager}</span>` : ''}
+    </div>`;
+  }
+
   function paint(data) {
     const performanceBox = $('aiPerformanceCards');
     if (performanceBox) {
@@ -276,7 +293,7 @@
       if (status) status.textContent = `${totalRecords} ${isProduct ? 'product' : 'employee'}${totalRecords === 1 ? '' : 's'} available`;
       const visibleRecords = recordsForBand.slice(0, state.visibleCount);
       performanceBox.innerHTML = recordsForBand.length
-        ? `<h3>${title} <small>Showing ${visibleRecords.length} of ${totalRecords} ${itemLabel}</small></h3><div class="ai-performance-grid">${visibleRecords.map(row => `<article class="ai-performance-card performance-${performanceBand(row.achievement_pct)}"><button type="button" class="card-expand" data-card-expand aria-label="Expand ${esc(isProduct ? row.product : row.employee)}" title="Expand card"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4M13 3h4v4M17 13v4h-4M3 13v4h4M3 7l5-5m4 0 5 5m0 6-5 5m-4 0-5-5"/></svg></button><div class="ai-card-head"><div><b>${esc(isProduct ? row.product : row.employee)}</b><span>${isProduct ? `SKU ${esc(row.product_id || 'N/A')}` : esc(row.designation || state.designation)}</span></div><strong>${percent(row.achievement_pct)}</strong></div><div class="ai-card-metrics"><div class="ai-card-sales"><span>Net Sales <b>${amount(row.actual)}</b></span><span>Target <b>${amount(row.target)}</b></span></div><div class="ai-card-kpis"><div><small>Total UCC</small><b>${esc(row.total_ucc ?? 0)}</b></div><div><small>GOLM</small><b>${signedPercent(row.golm_pct)}</b><em>Prev ${amount(row.previous_sales)} → This ${amount(row.actual)}</em></div><div><small>Disc A / T</small><b>${discountPair(row)}</b><em>Actual / Target</em></div></div></div>${diagnosisHtml(row)}</article>`).join('')}</div>${visibleRecords.length < recordsForBand.length || (isProduct ? data.has_more_products : data.has_more_employees) ? '<button type="button" class="ai-load-more" data-ai-load-more>Load More</button>' : ''}`
+        ? `<h3>${title} <small>Showing ${visibleRecords.length} of ${totalRecords} ${itemLabel}</small></h3><div class="ai-performance-grid">${visibleRecords.map(row => `<article class="ai-performance-card performance-${performanceBand(row.achievement_pct)}"><button type="button" class="card-expand" data-card-expand aria-label="Expand ${esc(isProduct ? row.product : row.employee)}" title="Expand card"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4M13 3h4v4M17 13v4h-4M3 13v4h4M3 7l5-5m4 0 5 5m0 6-5 5m-4 0-5-5"/></svg></button><div class="ai-card-head"><div><b>${esc(isProduct ? row.product : row.employee)}</b>${cardIdentityHtml(row, isProduct)}</div><strong>${percent(row.achievement_pct)}</strong></div><div class="ai-card-metrics"><div class="ai-card-sales"><span>Net Sales <b>${amount(row.actual)}</b></span><span>Target <b>${amount(row.target)}</b></span></div><div class="ai-card-kpis"><div><small>Total UCC</small><b>${esc(row.total_ucc ?? 0)}</b></div><div><small>GOLM</small><b>${signedPercent(row.golm_pct)}</b><em>Prev ${amount(row.previous_sales)} → This ${amount(row.actual)}</em></div><div><small>Disc A / T</small><b>${discountPair(row)}</b><em>Actual / Target</em></div></div></div>${diagnosisHtml(row)}</article>`).join('')}</div>${visibleRecords.length < recordsForBand.length || (isProduct ? data.has_more_products : data.has_more_employees) ? '<button type="button" class="ai-load-more" data-ai-load-more>Load More</button>' : ''}`
         : `<p class="ai-performance-empty">No ${itemLabel} match the selected ${state.band.toUpperCase()} level for this designation and month.</p>`;
       performanceBox.querySelector('[data-ai-load-more]')?.addEventListener('click', async () => {
         if (state.visibleCount < recordsForBand.length) {

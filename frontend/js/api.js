@@ -80,19 +80,10 @@
   let activeEmployeeRecord = null;
   let authenticatedDashboardUser = null;
   let lastHeaderMeta = {};
+  let hierarchyDrilldownTrail = [];
+  let scopedHierarchyRoot = null;
+  let hierarchyNavigationBusy = false;
   let filterRequestId = 0;
-
-  const canChooseActionOwner = () => ["admin", "exec", "executive"].includes(
-    String(authenticatedDashboardUser?.role || "").trim().toLowerCase()
-  );
-
-  const selectedDashboardEmployee = () => {
-    if (!canChooseActionOwner()) return null;
-    const record = activeEmployeeRecord;
-    const selectedName = effectiveSelections.employee;
-    return employeeScopeSnapshot && record?.position_code && selectedName !== "All" &&
-      String(record.employee || "").trim() === String(selectedName || "").trim() ? record : null;
-  };
 
   const current = () => ({
     designation: $("fDesignation").value || "ALL",
@@ -253,6 +244,68 @@
     return [...records].sort((a, b) => score(b) - score(a))[0];
   }
 
+  function hierarchyNode(record) {
+    if (!record) return null;
+    return {
+      employee: String(record.employee || "").trim(),
+      designation: String(record.designation || "").trim().toUpperCase(),
+      position_code: String(record.position_code || "").trim()
+    };
+  }
+
+  function sameHierarchyNode(left, right) {
+    if (!left || !right) return false;
+    if (left.position_code && right.position_code) return left.position_code === right.position_code;
+    return left.employee === right.employee && left.designation === right.designation;
+  }
+
+  function normalizedHierarchyTrail(nodes = hierarchyDrilldownTrail) {
+    return nodes.filter(node => !sameHierarchyNode(node, scopedHierarchyRoot));
+  }
+
+  function renderHierarchyBreadcrumb() {
+    const nav = $("hierarchyBreadcrumb");
+    if (!nav) return;
+    const root = scopedHierarchyRoot
+      ? hierarchyNode(scopedHierarchyRoot)
+      : { employee: "Executive", designation: "", position_code: "" };
+    const trail = normalizedHierarchyTrail();
+    const nodes = [root, ...trail];
+    nav.replaceChildren();
+
+    const label = document.createElement("span");
+    label.className = "hierarchy-breadcrumb-label";
+    label.textContent = "Hierarchy";
+    nav.append(label);
+
+    nodes.forEach((node, index) => {
+      if (index) {
+        const separator = document.createElement("span");
+        separator.className = "hierarchy-breadcrumb-separator";
+        separator.setAttribute("aria-hidden", "true");
+        separator.textContent = "›";
+        nav.append(separator);
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "hierarchy-breadcrumb-item";
+      button.dataset.hierarchyBreadcrumbIndex = String(index - 1);
+      if (index === 0) button.dataset.hierarchyBreadcrumbRoot = "true";
+      const name = node.employee || node.position_code || node.designation || "Dashboard";
+      button.textContent = node.designation && name !== node.designation
+        ? `${node.designation}: ${name}`
+        : name;
+      button.title = node.position_code
+        ? `${node.designation || "Employee"} · ${node.position_code}`
+        : "Return to the executive dashboard";
+      if (index === nodes.length - 1) {
+        button.setAttribute("aria-current", "page");
+        button.disabled = true;
+      }
+      nav.append(button);
+    });
+  }
+
   function setDesignationValue(value) {
     const select = $("fDesignation");
     if (!select) return;
@@ -361,9 +414,10 @@
     }
   }
 
-  async function applyEmployeeSelection(employee) {
+  async function applyEmployeeSelection(employee, { positionCode = "" } = {}) {
     const requestId = ++employeeScopeRequestId;
     const selectedEmployee = employee || "All";
+    const exactPosition = String(positionCode || "").trim();
     if (selectedEmployee === "All") {
       activeEmployeeRecord = null;
       if (lastHeaderMeta) {
@@ -390,14 +444,19 @@
       if (requestId !== employeeScopeRequestId) return;
       updateDashboardHeader();
       window.setDashboardDesignation?.(designation);
-      return;
+      return null;
     }
 
     try {
-      const params = new URLSearchParams({ employee: selectedEmployee });
-      const response = await getJSON("/api/employee-scope?" + params);
+      const params = exactPosition
+        ? new URLSearchParams({ position_code: exactPosition })
+        : new URLSearchParams({ employee: selectedEmployee });
+      const endpoint = exactPosition ? "/api/position-scope?" : "/api/employee-scope?";
+      const response = await getJSON(endpoint + params);
       if (requestId !== employeeScopeRequestId) return;
-      const record = chooseEmployeeRecord(response.records || []);
+      const record = exactPosition
+        ? (response.records || []).find(item => String(item.position_code || "").trim() === exactPosition) || response.records?.[0]
+        : chooseEmployeeRecord(response.records || []);
       if (!record) throw new Error("No matching staff record was returned");
 
       if (!employeeScopeSnapshot) {
@@ -443,11 +502,74 @@
         region: record.region
       });
       window.setDashboardDesignation?.(designation);
+      return record;
     } catch (error) {
       if (requestId !== employeeScopeRequestId) return;
       status("Could not load the selected employee's staff record: " + error.message);
+      if (exactPosition) return null;
       await applyCascadingFilters("employee", selectedEmployee);
       refresh({ reloadFilters: false });
+      return null;
+    }
+  }
+
+  async function drillIntoHierarchy({ employee, positionCode }) {
+    if (hierarchyNavigationBusy || !positionCode) return;
+    hierarchyNavigationBusy = true;
+    const previousTrail = normalizedHierarchyTrail();
+    const parent = hierarchyNode(activeEmployeeRecord);
+    let nextTrail = [...previousTrail];
+    if (parent && !sameHierarchyNode(parent, scopedHierarchyRoot) && !sameHierarchyNode(nextTrail.at(-1), parent)) {
+      const parentIndex = nextTrail.findIndex(node => sameHierarchyNode(node, parent));
+      nextTrail = parentIndex >= 0 ? nextTrail.slice(0, parentIndex + 1) : [...nextTrail, parent];
+    }
+    try {
+      const record = await applyEmployeeSelection(employee, { positionCode });
+      if (!record) return;
+      const target = hierarchyNode(record);
+      const existingIndex = nextTrail.findIndex(node => sameHierarchyNode(node, target));
+      hierarchyDrilldownTrail = existingIndex >= 0
+        ? nextTrail.slice(0, existingIndex + 1)
+        : [...nextTrail, target];
+      renderHierarchyBreadcrumb();
+    } catch (error) {
+      hierarchyDrilldownTrail = previousTrail;
+      renderHierarchyBreadcrumb();
+      status("Could not open the selected employee dashboard: " + error.message);
+    } finally {
+      hierarchyNavigationBusy = false;
+    }
+  }
+
+  async function navigateHierarchyBreadcrumb(index, isRoot) {
+    if (hierarchyNavigationBusy) return;
+    hierarchyNavigationBusy = true;
+    const previousTrail = normalizedHierarchyTrail();
+    try {
+      if (isRoot) {
+        hierarchyDrilldownTrail = [];
+        renderHierarchyBreadcrumb();
+        if (scopedHierarchyRoot) {
+          await applyEmployeeSelection(scopedHierarchyRoot.employee, {
+            positionCode: scopedHierarchyRoot.position_code
+          });
+        } else {
+          await applyEmployeeSelection("All");
+        }
+        return;
+      }
+      const target = previousTrail[index];
+      if (!target) return;
+      hierarchyDrilldownTrail = previousTrail.slice(0, index + 1);
+      renderHierarchyBreadcrumb();
+      const record = await applyEmployeeSelection(target.employee, { positionCode: target.position_code });
+      if (!record) throw new Error("The selected hierarchy level is no longer available");
+    } catch (error) {
+      hierarchyDrilldownTrail = previousTrail;
+      renderHierarchyBreadcrumb();
+      status("Could not return to the selected hierarchy level: " + error.message);
+    } finally {
+      hierarchyNavigationBusy = false;
     }
   }
 
@@ -462,6 +584,9 @@
       if (!record) throw new Error("No staff record exists for the assigned position");
 
       activeEmployeeRecord = record;
+      scopedHierarchyRoot = record;
+      hierarchyDrilldownTrail = [];
+      renderHierarchyBreadcrumb();
       employeeScopeSnapshot = null;
       autoFilledSelections.clear();
       const scopedValues = {
@@ -520,6 +645,9 @@
     filterRequestId += 1;
     activeTerritoryScope = null;
     activeEmployeeRecord = null;
+    scopedHierarchyRoot = null;
+    hierarchyDrilldownTrail = [];
+    renderHierarchyBreadcrumb();
     employeeScopeSnapshot = null;
     autoFilledSelections.clear();
     for (const field of filterFields) {
@@ -753,10 +881,12 @@
         const filteredHierarchy = selectedRole ? hierarchy.filter(row => row.designation === selectedRole) : hierarchy;
         const label = selectedRole || sections.hierarchy_label || "Team";
         if (heading) heading.textContent = `1. ${showBottom(topChoice) ? "BOTTOM" : "TOP"} ${label} - SALES ACHIEVEMENT %`;
-        if (description) description.textContent = selectedRole ? `Achievement percentage by ${selectedRole} name and position` : "Achievement percentage by name and position";
+        if (description) description.textContent = selectedRole
+          ? `Achievement percentage by ${selectedRole}. Click a name or position to open that dashboard.`
+          : "Achievement percentage by employee. Click a name or position to open that dashboard.";
         const sorted = filteredHierarchy.filter(r => r.achievement_pct != null).sort((a, b) => a.achievement_pct - b.achievement_pct);
         const rows = showBottom(topChoice) ? sorted.slice(0, 25) : sorted.slice(-25).reverse();
-        customerBox.innerHTML = rows.length ? rows.map(r => `<div class="hbar-row"><div class="hbar-label wide"><b>${html(r.employee)}</b><small>${html(r.designation)} · ${html(r.position_code)}</small></div><div class="hbar-track"><span class="hbar-fill ${achievementTone(r.achievement_pct)}" style="width:${Math.min(100, Math.max(0, Number(r.achievement_pct)))}%"></span></div><div class="hbar-val ${achievementTone(r.achievement_pct)}">${pct(r.achievement_pct)}</div></div>`).join("") : `<div class="empty-state"><p>No ${html(selectedRole || "team")} members with matched monthly targets.</p></div>`;
+        customerBox.innerHTML = rows.length ? rows.map(r => `<div class="hbar-row"><div class="hbar-label wide"><button type="button" class="hierarchy-drilldown" data-hierarchy-drilldown data-employee="${html(r.employee)}" data-position-code="${html(r.position_code)}" aria-label="Open ${html(r.designation)} dashboard for ${html(r.employee)}, position ${html(r.position_code)}"><b>${html(r.employee)}</b><small>${html(r.designation)} · ${html(r.position_code)}</small></button></div><div class="hbar-track"><span class="hbar-fill ${achievementTone(r.achievement_pct)}" style="width:${Math.min(100, Math.max(0, Number(r.achievement_pct)))}%"></span></div><div class="hbar-val ${achievementTone(r.achievement_pct)}">${pct(r.achievement_pct)}</div></div>`).join("") : `<div class="empty-state"><p>No ${html(selectedRole || "team")} members with matched monthly targets.</p></div>`;
       } else {
         if (heading) heading.textContent = `1. ${showBottom(topChoice) ? "BOTTOM" : "TOP"} CUSTOMERS / SHOPS PERFORMANCE %`;
         if (description) description.textContent = "Customer share of positive net sales";
@@ -925,11 +1055,13 @@
     const actions = document.querySelector("[data-spo-actions]");
     if (actions) {
       closeActionOwnerPicker?.();
-      const canChooseOwner = canChooseActionOwner();
-      const selectedOwner = selectedDashboardEmployee();
+      const contextPositionCode = String(
+        activeEmployeeRecord?.position_code || authenticatedDashboardUser?.scope_position_code || ""
+      ).trim();
       actions.innerHTML = `<form class="form-grid action-plan-form" data-action-plan-form>
         <label class="form-field wide"><span>Corrective Action:</span><textarea name="action_text" rows="3" required maxlength="4000" placeholder="Add action based on the insights above..."></textarea></label>
-        ${selectedOwner ? `<div class="action-owner-fixed wide"><span>Message to selected employee</span><strong>${html(selectedOwner.employee)} · ${html(selectedOwner.designation)} · ${html(selectedOwner.position_code)}</strong><input type="hidden" name="action_owner_position_code" value="${html(selectedOwner.position_code)}"></div>` : !canChooseOwner ? `<div class="action-owner-fixed wide"><span>Message to reporting manager</span><strong data-reporting-recipient>Loading reporting manager...</strong><input type="hidden" name="action_owner_position_code" value=""></div>` : `<label class="form-field wide"><span>Owner Designation:</span><select class="action-owner-select" data-owner-designation><option value="">All designations</option></select></label>
+        <input type="hidden" name="context_position_code" value="${html(contextPositionCode)}">
+        <label class="form-field wide"><span>Owner Designation:</span><select class="action-owner-select" data-owner-designation><option value="">All designations</option></select></label>
         <div class="form-field wide action-owner-field"><span id="actionOwnerLabel" data-action-owner-label>Action Owner:</span>
           <input type="hidden" name="action_owner_position_code" value="">
           <div class="action-owner-picker" data-owner-picker>
@@ -939,34 +1071,19 @@
               <div class="filter-picker-options" data-owner-options role="listbox" aria-labelledby="actionOwnerLabel"></div>
             </div>
           </div>
-          <small class="action-owner-help">The message is addressed to the selected employee's position code.</small>
-        </div>`}
+          <small class="action-owner-help">Choose a direct report for this dashboard position.</small>
+        </div>
         <label class="form-field"><span>Timeline / Due Date:</span><input name="due_date" type="date"></label>
         <label class="form-field"><span>Priority:</span><select name="priority" class="action-priority-select" data-priority="Medium"><option value="High">High</option><option value="Medium" selected>Medium</option><option value="Low">Low</option></select></label>
         <div class="action-plan-submit wide"><button class="action-plan-send" type="submit">Save action plan &amp; send message</button><span class="action-plan-message" role="status"></span></div>
       </form>`;
       const form = actions.querySelector("[data-action-plan-form]");
-      if (selectedOwner) form.dataset.fixedOwnerCode = selectedOwner.position_code;
       const priority = form?.querySelector("[name=priority]");
       priority?.addEventListener("change", () => { priority.dataset.priority = priority.value; });
-      if (!canChooseOwner) {
-        const submit = form.querySelector("[type=submit]");
-        submit.disabled = true;
-        getJSON("/api/action-plan-recipient").then(({ recipient }) => {
-          if (!form.isConnected) return;
-          form.querySelector("[data-reporting-recipient]").textContent = `${recipient.employee_name} · ${recipient.designation}`;
-          const ownerInput = form.querySelector("[name=action_owner_position_code]");
-          ownerInput.defaultValue = recipient.position_code;
-          ownerInput.value = recipient.position_code;
-          form.dataset.reportingOwnerCode = recipient.position_code;
-          submit.disabled = false;
-        }).catch(error => {
-          if (!form.isConnected) return;
-          form.querySelector("[data-reporting-recipient]").textContent = error.message;
-          form.querySelector(".action-plan-message").textContent = error.message;
-          form.querySelector(".action-plan-message").classList.add("error");
-        });
-      } else if (!selectedOwner) getJSON("/api/action-plan-recipients").then(({ recipients, recipient_label: recipientLabel }) => {
+      const recipientParams = new URLSearchParams();
+      if (contextPositionCode) recipientParams.set("context_position_code", contextPositionCode);
+      const recipientUrl = "/api/action-plan-recipients" + (recipientParams.size ? `?${recipientParams}` : "");
+      getJSON(recipientUrl).then(({ recipients, recipient_label: recipientLabel }) => {
         if (!form?.isConnected) return;
         const owner = form?.querySelector("[name=action_owner_position_code]");
         const designation = form?.querySelector("[data-owner-designation]");
@@ -982,7 +1099,9 @@
         if (!owner || !designation || !picker || !toggle || !selectedLabel || !menu || !search || !options) return;
         const labelText = recipientLabel || "reporting staff";
         if (label) label.textContent = `Action Owner (${labelText})`;
-        if (help) help.textContent = "The message is addressed to the selected employee's position code.";
+        if (help) help.textContent = labelText === "selected employee"
+          ? "This position has no direct reports, so the action is assigned to the selected employee."
+          : "Choose one direct report for this corrective action.";
         if (!recipients.length) {
           selectedLabel.textContent = `No ${labelText} employees available`;
           toggle.disabled = true;
@@ -991,12 +1110,13 @@
         }
         const designations = [...new Set(recipients.map(r => r.designation).filter(Boolean))].sort();
         designation.innerHTML = '<option value="">All designations</option>' + designations.map(value => `<option value="${html(value)}">${html(value)}</option>`).join("");
+        if (recipients.length === 1) owner.value = recipients[0].position_code;
         const updateOwnerHelp = () => {
           const selected = recipients.find(r => r.position_code === owner.value);
           const availableCount = recipients.filter(r => !designation.value || r.designation === designation.value).length;
           selectedLabel.textContent = selected ? `${selected.employee_name} · ${selected.designation} · ${selected.position_code}` : `Select ${labelText} (${availableCount})`;
           toggle.title = selectedLabel.textContent;
-          if (help) help.textContent = !selected ? "The message is addressed to the selected employee's position code."
+          if (help) help.textContent = !selected ? `Choose ${labelText}.`
             : selected.user_id ? "An in-app message will be sent to this employee now."
             : "The in-app message will wait for an account assigned to this position code.";
         };
@@ -1298,7 +1418,12 @@
       const field = filterKeyMap[id];
       if (field) {
         if (field === "employee") {
-          await applyEmployeeSelection(e.target.value);
+          const record = await applyEmployeeSelection(e.target.value);
+          const selectedNode = hierarchyNode(record);
+          hierarchyDrilldownTrail = selectedNode && !sameHierarchyNode(selectedNode, scopedHierarchyRoot)
+            ? [selectedNode]
+            : [];
+          renderHierarchyBreadcrumb();
           return;
         }
         if (field === "territory") {
@@ -1315,6 +1440,8 @@
     employeeScopeRequestId += 1;
     employeeScopeSnapshot = null;
     activeEmployeeRecord = null;
+    hierarchyDrilldownTrail = [];
+    renderHierarchyBreadcrumb();
     if (lastHeaderMeta) lastHeaderMeta.employee = "";
     updateDashboardHeader();
   });
@@ -1326,6 +1453,8 @@
     employeeScopeRequestId += 1;
     employeeScopeSnapshot = null;
     activeEmployeeRecord = null;
+    hierarchyDrilldownTrail = [];
+    renderHierarchyBreadcrumb();
     if (lastHeaderMeta) {
       lastHeaderMeta.employee = "";
       lastHeaderMeta.position_code = "";
@@ -1492,6 +1621,22 @@
     }
   });
   document.addEventListener("click", e => {
+    const drilldown = e.target.closest("[data-hierarchy-drilldown]");
+    if (drilldown) {
+      drillIntoHierarchy({
+        employee: drilldown.dataset.employee || "",
+        positionCode: drilldown.dataset.positionCode || ""
+      });
+      return;
+    }
+    const breadcrumb = e.target.closest("[data-hierarchy-breadcrumb-index]");
+    if (breadcrumb) {
+      navigateHierarchyBreadcrumb(
+        Number(breadcrumb.dataset.hierarchyBreadcrumbIndex),
+        breadcrumb.dataset.hierarchyBreadcrumbRoot === "true"
+      );
+      return;
+    }
     const button = e.target.closest("[data-discount-toggle]");
     if (!button) return;
     const breakdown = button.parentElement.querySelector("[data-discount-breakdown]");
@@ -1658,6 +1803,7 @@
     if (line1) {
       document.title = `${line1} | Executive Sales Dashboard`;
     }
+    renderHierarchyBreadcrumb();
   }
   document.addEventListener("submit", async event => {
     const form = event.target.closest("[data-action-plan-form]");
@@ -1667,18 +1813,8 @@
     const values = Object.fromEntries(new FormData(form).entries());
     values.due_date = values.due_date || null;
     values.status = "Open";
-    if (form.dataset.reportingOwnerCode && values.action_owner_position_code !== form.dataset.reportingOwnerCode) {
-      message.textContent = "Reporting manager changed. Refresh the dashboard before sending.";
-      message.classList.add("error");
-      return;
-    }
-    if (form.dataset.fixedOwnerCode && selectedDashboardEmployee()?.position_code !== form.dataset.fixedOwnerCode) {
-      message.textContent = "Wait for the selected employee to load before sending.";
-      message.classList.add("error");
-      return;
-    }
     if (!values.action_owner_position_code) {
-      message.textContent = canChooseActionOwner() ? "Select an action owner." : "Wait for your reporting manager to load.";
+      message.textContent = "Select an action owner.";
       message.classList.add("error");
       const toggle = form.querySelector("[data-owner-toggle]");
       toggle?.classList.add("error");
